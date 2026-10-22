@@ -1,0 +1,37 @@
+{
+  "name": "switchboard",
+  "version": "0.1.0",
+  "description": "One always-on service that several principals' AI agents share: cross-team messaging over MCP, a nightly maintenance slot that humans approve in Slack, and one shared ops agent as the only voice humans read.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/noahljungberg/switchboard.git"
+  },
+  "homepage": "https://github.com/noahljungberg/switchboard#readme",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "bin": {
+    "switchboard": "src/cli.ts"
+  },
+  "scripts": {
+    "test": "node --test --test-reporter=spec 'test/*.test.ts'",
+    "typecheck": "tsc -p .",
+    "check:arch": "node scripts/check-arch.ts",
+    "e2e": "node scripts/e2e.ts",
+    "check": "npm run typecheck && npm run check:arch && npm test && npm run e2e",
+    "start": "node src/cli.ts serve"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.299",
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "@slack/bolt": "^5.1.0",
+    "yaml": "^2.9.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "typescript": "^7.0.2"
+  }
+}

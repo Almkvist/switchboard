@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "switchboard": {
+      "type": "http",
+      "url": "${SWITCHBOARD_URL}/mcp",
+      "headers": { "Authorization": "Bearer ${SWITCHBOARD_TOKEN}" }
+    }
+  }
+}

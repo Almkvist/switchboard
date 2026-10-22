@@ -1,0 +1,87 @@
+# switchboard config. Copy to config.yaml (gitignored) or point SWITCHBOARD_CONFIG at it.
+# Shape only: secrets come from the environment (.env.example). All ids below are fake.
+
+listen:
+  host: 100.64.0.10        # this host's Tailscale IP. The agent MCP endpoint binds here and nowhere else.
+  port: 7420
+
+data_dir: /var/lib/switchboard   # the SQLite DB, the context checkouts and the ops memory live here
+
+# Cross-principal research messages between agents (P4 in docs/design-principles.md).
+#   deny          new principals mute each other completely; lift with `node src/cli.ts admin set-mute ... none`
+#   relayed_only  they reach each other only through the ops agent
+#   open          no mutes
+research_lane_default: deny
+
+slack:
+  ops_channel: C0000000000   # the #ops channel id: shared threads, window approvals
+
+idle_ping_minutes: 30        # tell a human when mail has waited this long for one of their agents
+solicited_reply_hours: 24    # replies to an agent that wrote to the other side's agents reach it past its mute this long (P4)
+ask_expiry_minutes: 60       # an agent's question the ops agent hasn't put to its human by then comes back "not presented" (P3)
+window_grace_minutes: 30     # urgent windows: page the requester's human if not reported by end + grace;
+                             # the nightly slot: its one Slack summary is posted at slot end + grace (P5)
+
+# The nightly maintenance slot (P5), in UTC. Agents queue prod changes for it with request_window; each
+# approver approves the schedule once with a Slack button. This only seeds the DB on the first start: after
+# that the ops agent changes it (set_maintenance_time), which voids the standing approvals.
+maintenance:
+  start: "21:00"
+  duration_minutes: 120      # at most 720
+
+# Shared prod resources. Owners are principal ids. Every window needs a human button press: approvers
+# default to the owners other than the requester's principal. require: any | all (of the approvers).
+# Ids and names below are examples.
+resources:
+  - id: api
+    name: Public API
+    owners: [alice, bob]
+    approvers: [bob]
+    max_duration_minutes: 60
+    note: Waits until the on-call engineer confirms traffic is drained.
+  - id: database
+    name: Primary database
+    owners: [alice, bob]
+    max_duration_minutes: 120
+  - id: deploys
+    name: Production deploys
+    owners: [alice, bob]
+    max_duration_minutes: 60
+  - id: network
+    name: Network and security groups
+    owners: [alice, bob]
+    require: all
+    approvers: [alice, bob]
+    max_duration_minutes: 60
+    note: Both approve.
+
+# The ops agent. Remove this section to run without it (windows and messaging still work).
+ops:
+  mcp_port: 7421             # the ops engine's MCP server; always bound to 127.0.0.1
+  model: claude-opus-5-5     # the model every Claude engine runs; the engines refuse any other (P8)
+  effort: high
+  # Engine chain, in order of preference (P7). An engine whose credentials are missing is skipped
+  # with a log line. Every switch down or back up is announced in Slack (P7).
+  engines:
+    - claude-api             # Agent SDK on an Anthropic API key (ANTHROPIC_API_KEY)
+    - claude                 # claude -p on a Claude subscription token (CLAUDE_CODE_OAUTH_TOKEN)
+    # - codex                # codex app-server on a ChatGPT plan (CODEX_HOME). Left out on purpose: its sandbox can
+                             # read the service's DB and env file (known issue K5, runbook §5)
+  claude_bin: claude         # for the `claude` engine; pin claude >= 2.1.299 (needs --restricted)
+  codex:
+    bin: codex
+  failover_after_errors: 3   # engine failures in a row (failed probes) before stepping down; quota/credit errors step at once
+  turn_timeout_minutes: 15
+  max_concurrent_turns: 2
+  # Used once, when the memory repo is created; startup fails if it doesn't exist. A relative path is
+  # resolved from this file's directory: this one works for a config.yaml in the checkout. With the runbook's
+  # /etc/switchboard install, point it at the checkout instead (/opt/switchboard/examples/memory-seed).
+  memory_seed_dir: examples/memory-seed
+  context:
+    refresh_minutes: 10
+    # Read-only checkouts the agent can Read/Grep, cloned with CONTEXT_DEPLOY_KEY_PATH (runbook §6). Empty until
+    # you list yours, for example:
+    #   - name: docs
+    #     url: git@github.com:acme/docs.git
+    #     branch: main
+    repos: []
