@@ -87,7 +87,8 @@ one without failing the request, and never uses it for authorization.
   principals `to` names the agent only.
 - **Loop guard.** An agent's message past 12 from one sender (its session, else the agent) to one recipient (`ops`
   included), or past 60 from the agent, within 10 minutes is refused (`loop_guard`) and audited; the window is in
-  memory. Humans, switchboard and the ops agent never count.
+  memory. A message reaches everyone its write delivered to: its own recipients, and the ops agent for a relay request
+  or a copy it made. Humans, switchboard and the ops agent never count.
 
 ## Rules it enforces
 

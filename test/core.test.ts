@@ -1032,6 +1032,16 @@ describe('loop guard', () => {
     assert.equal(s.scout.sendMessage('builder', 'ten minutes later').status, 'delivered');
   });
 
+  test('what one message makes counts too: in a relayed_only thread the 13th post, each a relay request to the ops agent, is refused', () => {
+    const { core, s } = world('open');
+    const { thread } = s.scout.sendMessage('bob/helper', 'is the staging box free?');
+    core.setMute('bob', 'alice', 'relayed_only');
+    for (let i = 1; i <= 12; i++) s.scout.post(thread, `still need it ${i}`);
+    assert.equal(refusal(() => s.scout.post(thread, 'still need it 13')),
+      'loop_guard: refused: you and the ops agent have exchanged many messages in the last few minutes, which looks like a loop. Check with your human before continuing.');
+    assert.equal(core.pendingRelays('bob/helper').length, 12, 'the refused post queued no relay request');
+  });
+
   test('an agent\'s 61st message in 10 minutes is refused, whichever session and recipient', () => {
     const { core, agents } = world();
     for (let n = 1; n <= 5; n++) for (let i = 0; i < 12; i++) core.forAgent(agents.scout, hint(n)).sendMessage('builder', `m${i}`);

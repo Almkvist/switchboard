@@ -983,6 +983,12 @@ export class Core {
   recipients(threadId: string, seq: number): string[] {
     return all<{ recipient: string }>(this.db, 'SELECT recipient FROM inbox WHERE thread_id = ? AND event_seq = ? ORDER BY id', threadId, seq).map((r) => r.recipient);
   }
+  /** The newest inbox row's id: the rows one write adds come after it. */
+  lastInboxId(): number { return one<{ id: number | null }>(this.db, 'SELECT MAX(id) AS id FROM inbox')!.id ?? 0; }
+  /** Who got mail from the rows written after inbox row `id`: in a transaction, one write's message, relay requests and copies. */
+  recipientsSince(id: number): string[] {
+    return all<{ recipient: string }>(this.db, 'SELECT DISTINCT recipient FROM inbox WHERE id > ?', id).map((r) => r.recipient);
+  }
   /**
    * Where an event's mail for `recipient` went and how it is seen: push (its session is woken now, or holds
    * wait_for_message), turn (busy, or it has hooks: when its turn ends), pull (when it checks). The ops agent wakes on
@@ -1247,14 +1253,16 @@ export class AgentSession {
 
   /**
    * An agent's own message (send_message, post, ask_human): written whole or not at all, its thread noted as this session's
-   * for replies (reply routing), and held to the loop guard. A refusal is audited after the rollback, so the row stays.
+   * for replies (reply routing), and held to the loop guard, counting everyone it reached: its own recipients, and the
+   * ops agent for a relay request or a copy it made. A refusal is audited after the rollback, so the row stays.
    */
   private guarded<T extends { thread: string; seq: number }>(write: () => T): T {
     try {
       return tx(this.core.db, () => {
+        const before = this.core.lastInboxId();
         const r = write();
         if (this.session) this.core.noteRoute(r.thread, this.agent.id, this.session.id);
-        this.core.loopGuard(this.agent.id, this.session ? `${this.agent.id}@${this.session.id}` : this.agent.id, this.core.recipients(r.thread, r.seq));
+        this.core.loopGuard(this.agent.id, this.session ? `${this.agent.id}@${this.session.id}` : this.agent.id, this.core.recipientsSince(before));
         return r;
       });
     } catch (err) {
