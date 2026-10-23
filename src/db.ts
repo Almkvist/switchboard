@@ -442,8 +442,8 @@ export const MIGRATIONS: string[] = [
   // last said about it: hints, never authority. An inbox row may target one session (NULL: any session of the agent reads
   // it, as before). inbox_told: which sessions were told about which rows (a wake or a hook notice), so a message wakes
   // each session at most once, even when it moves between them. routes: the session that last wrote in a thread for its
-  // agent, where replies go; changes and asks keep the session that queued or asked them. Existing rows: no sessions,
-  // every inbox row untargeted.
+  // agent, where replies go; changes, asks and items for humans keep the session that queued, asked or wrote them.
+  // Existing rows: no sessions, every inbox row untargeted.
   `
   CREATE TABLE sessions (
     id        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -480,6 +480,7 @@ export const MIGRATIONS: string[] = [
   );
   ALTER TABLE changes ADD COLUMN session INTEGER REFERENCES sessions(id);
   ALTER TABLE asks ADD COLUMN session INTEGER REFERENCES sessions(id);
+  ALTER TABLE human_items ADD COLUMN session INTEGER REFERENCES sessions(id);
   `,
 ];
 

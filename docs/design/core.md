@@ -75,7 +75,9 @@ one without failing the request, and never uses it for authorization.
   (`<agent>@<session>`, own principal only); else the session that last wrote in the thread (`routes`), asked
   (`asks.session`) or queued (`changes.session`), if online; else the most recently active online idle session; else
   the most recently active online busy one; else none, which any session reads. Posts, ops replies, `ask_human`'s
-  presentation and answer, an urgent window's decision, clock and report, and a lost slot all follow it.
+  presentation and answer, an urgent window's decision, clock and report, and a lost slot all follow it, and so do
+  `tell_human`'s post about an item and the human's replies under it (to the session that wrote the item,
+  `human_items.session`).
 - **Wake.** A wake is due for a session that isn't busy, doesn't hold `wait_for_message`, and has unread targeted mail
   it wasn't told about (`inbox_told`, per message and session). A returned wake, a hook's notice (UserPromptSubmit
   context, a Stop block) or reading tells it; `claimWake` claims in one INSERT, so a message wakes each session at most
@@ -114,7 +116,8 @@ one without failing the request, and never uses it for authorization.
 - `src/db.ts`: schema, migrations, query helpers, transactions. Migration 11: `principals.delegate_agent_id` (P4). Migration 12: `changes` rebuilt for `withdrawn`.
   Migration 13: `human_items` (P3). Migration 14: `asks` (P3); an agent's
   ask_human from before it that was never mirrored or answered becomes a pending ask, so it expires. Migration 15:
-  `sessions`, `routes`, `inbox.session`, `inbox_told`, `changes.session`, `asks.session`; existing mail stays untargeted.
+  `sessions`, `routes`, `inbox.session`, `inbox_told`, `changes.session`, `asks.session`, `human_items.session`; existing
+  mail stays untargeted.
 - `src/core.ts`: everything above.
 
 ## Dependencies

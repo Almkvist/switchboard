@@ -145,6 +145,8 @@ export interface HumanItem {
   outcome: string | null;
   created_at: string;
   handled_at: string | null;
+  /** The session that wrote it, which the ops agent's post about it and the human's replies go to (reply routing). */
+  session: number | null;
 }
 
 export type ErrorCode = 'not_found' | 'forbidden' | 'invalid' | 'conflict' | 'muted' | 'loop_guard';
@@ -514,12 +516,12 @@ export class Core {
 
   // ---- P3: what agents write for humans, through the ops agent ----
 
-  /** One item per human for an agent's event the ops agent reads. */
-  addHumanItems(event: CoreEvent, principals: string[]): string[] {
+  /** One item per human for an agent's event the ops agent reads; `session`: the agent's session that wrote it. */
+  addHumanItems(event: CoreEvent, principals: string[], session: number | null = null): string[] {
     const from = event.actor.slice('agent:'.length);
     return principals.map((p) => {
       const id = newId('m');
-      run(this.db, 'INSERT INTO human_items (id, principal, from_agent, thread_id, event_seq, created_at) VALUES (?, ?, ?, ?, ?, ?)', id, p, from, event.thread_id, event.seq, this.iso());
+      run(this.db, 'INSERT INTO human_items (id, principal, from_agent, thread_id, event_seq, created_at, session) VALUES (?, ?, ?, ?, ?, ?, ?)', id, p, from, event.thread_id, event.seq, this.iso(), session);
       return id;
     });
   }
@@ -1281,8 +1283,9 @@ export class AgentSession {
       this.core.join(thread.id, this.actor);
       const { event, muted, relayed } = this.core.postMessage(thread, this.actor, { text: body, ...(shared && humans.length ? { for_human: humans } : {}) });
       const delivery = this.core.recipients(thread.id, event.seq).map((r) => this.core.delivery(thread.id, event.seq, r, this.agent.principal_id)!);
-      const items = !humans.length ? [] : shared ? this.core.addHumanItems(event, humans)
-        : this.core.addHumanItems(this.core.append(this.core.dmThread(humans[0]!).id, this.actor, 'message', { text: body, to: humans[0], for_human: humans, tool: 'post', re_thread: thread.id }), humans);
+      const session = this.session?.id ?? null;
+      const items = !humans.length ? [] : shared ? this.core.addHumanItems(event, humans, session)
+        : this.core.addHumanItems(this.core.append(this.core.dmThread(humans[0]!).id, this.actor, 'message', { text: body, to: humans[0], for_human: humans, tool: 'post', re_thread: thread.id }), humans, session);
       return { status: 'posted', thread: thread.id, seq: event.seq, slack: false,
         ...(humans.length ? { for_human: humans, items, note: `${humans.join(' and ')} ${humans.length > 1 ? 'are' : 'is'} in this thread, but no human reads your words directly: the ops agent does, and tells them what they need to know.` } : {}),
         ...(muted.length || relayed.length ? { not_delivered: { muted, relayed } } : {}),
@@ -1330,7 +1333,7 @@ export class AgentSession {
       const thread = own ? this.core.dmThread(human.id) : this.pairThread('ops', 'shared', `${this.agent.id} ↔ ops agent`, true);
       if (!own) this.core.join(thread.id, 'ops');
       const event = own ? this.core.append(thread.id, this.actor, 'message', body) : this.core.postMessage(thread, this.actor, body).event;
-      const [item] = this.core.addHumanItems(event, [human.id]);
+      const [item] = this.core.addHumanItems(event, [human.id], this.session?.id ?? null);
       return {
         status: 'delivered', to: human.id, via: 'the ops agent', item, thread: thread.id, seq: event.seq,
         note: `Delivered to the ops agent, who tells ${human.id} in plain words what they need to know. No human reads your words directly: write the facts plainly for it.` +

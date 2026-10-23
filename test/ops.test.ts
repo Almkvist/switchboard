@@ -14,7 +14,7 @@ import { OpsAgent } from '../src/ops.ts';
 import { OpsMcp } from '../src/ops-mcp.ts';
 import { StubStatus } from '../src/status.ts';
 import { Windows } from '../src/windows.ts';
-import { Clock, FakeEngine, FakeSlack, RESOURCES, SLACK, buttonValue, call, tempDir, turnThread, world } from './fakes.ts';
+import { Clock, FakeEngine, FakeSlack, RESOURCES, SLACK, buttonValue, call, hint, tempDir, turnThread, world } from './fakes.ts';
 
 const running: Array<{ stop(): Promise<void> }> = [];
 afterEach(async () => { while (running.length) await running.pop()!.stop(); }); // even when an assertion failed
@@ -84,6 +84,27 @@ describe('wake rules', () => {
     await settle();
     assert.equal(primary.turns.length, 1, 'an untagged reply doesn\'t wake it');
     assert.deepEqual(scout.readInbox().map((i) => [i.from, i.body['text']]), [['human', 'scout, yes it is']]);
+  });
+
+  test('tell_human\'s post and the human\'s reply under it reach the session that wrote to the human, though another is more recently active', async () => {
+    const primary = new FakeEngine('claude', async (req, mcp) => {
+      const items = [...req.prompt.matchAll(/"item":"(m_[0-9a-f]{12})"/g)].map((m) => m[1]!);
+      if (items.length) await call(mcp, 'tell_human', { principal: 'bob', text: 'Alice\'s scout asks whether the staging box is free after 15:00 UTC.', items });
+    });
+    const { sb, settle, say, slack, clock } = await boot(primary);
+    const as = (n: number, poll = true) => sb.core.forAgent(sb.core.agent('alice/scout')!, hint(n, { repo: `repo-${n}` }, { poll }));
+    const s1 = as(1);
+    s1.sendMessage('bob', 'staging box?');
+    clock.advance(1);
+    const s2 = as(2);
+    as(2, false); // a request: s2 is online and the most recently active
+    await settle();
+    const root = slack.posts.find((p) => p.channel === SLACK.ops && !p.threadTs)!;
+    await say(SLACK.bob, 'scout, yes it is', { threadTs: root.ts });
+    await settle();
+    assert.deepEqual(s1.readInbox().map((i) => [i.from, i.body['text']]),
+      [['ops', '@bob Alice\'s scout asks whether the staging box is free after 15:00 UTC.'], ['human', 'scout, yes it is']]);
+    assert.deepEqual(s2.readInbox(), []);
   });
 
   test('send_message(to: ops) and a new urgent window wake it, and it sees the window; the decision, the clock and the report don\'t (P5)', async () => {
