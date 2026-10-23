@@ -275,8 +275,9 @@ Node ≥ 24, no dependencies), as its MCP server and hook. Setup per kit: [clien
   config. After `sb issue-token`, update that file and restart the session: the MCP server reads it once, at start.
 - **Sessions.** Each Claude Code session and Codex thread on a token is a session, `<agent>@<repo>` (`-2`, `-3` on a
   collision). Mail to an agent targets the session that last wrote in the thread, else its most recently active online
-  idle one. A session keeps its name 24 h after it was last seen (15 minutes if no client could ever wake it); a gone
-  session's unread mail moves on at the next 30 s tick. In a session, `list_team` shows them; from the host:
+  idle one. A session keeps its name 24 h after it was last seen (15 minutes if no client could ever wake it). Once its
+  client has stopped polling for 10 minutes (the session closed), or it is gone, its unread mail moves on at the next
+  30 s tick, to an online session or to any. In a session, `list_team` shows them; from the host:
   `sqlite3 /var/lib/switchboard/switchboard.db "select agent_id, name, key, status, host, polled_at, seen_at from sessions where name is not null order by seen_at desc"`
 - **Wakes.** The client holds `GET /wait`; when mail arrives for its idle session it wakes it: Claude Code through the
   session's messaging socket, Codex with `codex queue`. If a session isn't woken, check that it is online (`polled_at`

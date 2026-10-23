@@ -170,6 +170,8 @@ const TOKEN_PREFIX = 'sb_';
 const ONLINE_MS = 2 * 60_000;
 const KEEP_MS = 24 * 60 * 60_000;
 const HEADLESS_MS = 15 * 60_000;
+/** A session whose wake client hasn't polled for this long is closed: its mail moves on, though it keeps its name. */
+const CLOSED_MS = 10 * 60_000;
 const SESSION_KEY = /^(claude|codex):[0-9a-f-]{8,64}$/i;
 const THREAD_ID = /^[0-9a-f-]{8,64}$/i;
 const HOST = /^[A-Za-z0-9._-]+$/;
@@ -919,14 +921,21 @@ export class Core {
       agentId ?? null, agentId ?? null, new Date(now - HEADLESS_MS).toISOString(), new Date(now - KEEP_MS).toISOString());
   }
 
-  /** The 30 s tick: frees gone sessions' names, and retargets their unread mail by the rule new mail follows, which may wake another session. */
+  /**
+   * The 30 s tick: frees gone sessions' names, and moves the unread mail of gone and closed sessions (a wake client that
+   * hasn't polled for 10 minutes) on by the rule new mail follows: to an online session, which may be woken, else to none,
+   * which any session reads. A closed session keeps its name, so it gets it back when it returns.
+   */
   expireSessions(): void {
+    const closed = new Date(this.now().getTime() - CLOSED_MS).toISOString();
     tx(this.db, () => {
       this.freeNames();
-      for (const r of all<{ id: number; recipient: string; thread_id: string }>(this.db,
-        'SELECT i.id, i.recipient, i.thread_id FROM inbox i JOIN sessions s ON s.id = i.session WHERE s.name IS NULL AND i.read_at IS NULL')) {
+      for (const r of all<{ id: number; recipient: string; thread_id: string; session: number }>(this.db, `SELECT i.id, i.recipient, i.thread_id, i.session
+        FROM inbox i JOIN sessions s ON s.id = i.session WHERE i.read_at IS NULL AND (s.name IS NULL OR s.polled_at < ?)`, closed)) {
         const agent = r.recipient.slice('agent:'.length);
-        run(this.db, 'UPDATE inbox SET session = ?, told = 0 WHERE id = ?', this.target(agent, this.route(r.thread_id, agent))?.id ?? null, r.id);
+        const to = this.target(agent, this.route(r.thread_id, agent))?.id ?? null;
+        if (to === r.session) continue; // still its best session (it holds wait_for_message, say)
+        run(this.db, 'UPDATE inbox SET session = ?, told = 0 WHERE id = ?', to, r.id);
         afterCommit(this.db, () => this.notify(r.recipient));
       }
     });

@@ -945,6 +945,29 @@ describe('addressing and delivery', () => {
     assert.deepEqual(texts(core.forAgent(agents.builder, { thread: sid(2) }).readInbox()), ['on it', 'done: the gateway is fine'], 'and its mail moved on');
   });
 
+  test('a session whose wake client hasn\'t polled for 10 minutes is closed: the tick moves its mail on (untargeted when nobody is online), and it keeps its name', async () => {
+    const { core, s, clock, at } = team();
+    at(1, { repo: 'one' }, { poll: true });
+    at(4, { repo: 'headless' }); // no client ever polled for it, so nothing says its client is gone
+    const sent = [s.scout.sendMessage('builder', 'for one'), s.scout.sendMessage('alice/builder@headless', 'for the headless one')];
+    const where = () => sent.map((m) => (core.db.prepare(`SELECT s.name FROM inbox i LEFT JOIN sessions s ON s.id = i.session
+      WHERE i.thread_id = ? AND i.event_seq = ? AND i.recipient = 'agent:alice/builder'`).get(m.thread, m.seq) as { name: string | null }).name);
+    clock.advance(9);
+    core.expireSessions();
+    assert.deepEqual(where(), ['one', 'headless'], 'its client polled 9 minutes ago: it may be back');
+    clock.advance(2);
+    const two = at(2, { repo: 'two' }, { poll: true });
+    core.expireSessions();
+    assert.deepEqual(where(), ['two', 'headless'], 'after 10 minutes its client is gone: the mail goes to the online session');
+    assert.deepEqual(await two.wakes(0), { wake: [{ session: `claude:${sid(2)}`, unread: 1, steer: 0 }] }, 'and wakes it');
+    assert.equal(at(1, { repo: 'one' }, { poll: true }).whoami().session, 'alice/builder@one', 'it keeps its name for when it comes back');
+    sent.push(s.scout.sendMessage('alice/builder@two', 'for two'));
+    clock.advance(11);
+    core.expireSessions();
+    assert.deepEqual(where(), [null, null, null], 'nobody online: untargeted');
+    assert.deepEqual(texts(at(3, { repo: 'three' }).readInbox()), ['for one', 'for the headless one', 'for two'], 'so any session reads it, a new one too');
+  });
+
   test('send_message and post say where the mail went and how it is seen: push (woken now, or waiting for it), turn (busy, or hooks), pull (when it checks); across principals only the agent', async () => {
     const { core, s, clock, at } = team('open');
     at(1, { repo: 'one' }, { poll: true });

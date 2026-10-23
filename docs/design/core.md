@@ -64,7 +64,9 @@ one without failing the request, and never uses it for authorization.
 - **Name.** A new session (or one back from gone) is named after its repo, else its cwd's basename, else its kind,
   lowercased, with `-2`, `-3` on a collision among the agent's current sessions. Its address is `<agent>@<name>`.
 - **Lifetime.** It keeps its name while seen within 24 h; one no client ever polled `/wait` for (headless) loses it after
-  15 minutes unseen. A gone session frees its name; the tick (`expireSessions`) retargets its unread mail.
+  15 minutes unseen. A gone session frees its name. One whose wake client hasn't polled for 10 minutes is closed: it
+  keeps its name, for when it returns. The tick (`expireSessions`) moves the unread mail of gone and closed sessions on
+  by the targeting rule: to an online session, which may be woken, else untargeted.
 - **Status.** The client's report from Claude Code's registry wins; else hook events (UserPromptSubmit busy, Stop idle);
   else unknown. Busy means busy or waiting, unless it holds `wait_for_message`.
 - **Online.** Its client polled `/wait` for it, or it held `wait_for_message`, in the last 2 minutes (or holds one now).
