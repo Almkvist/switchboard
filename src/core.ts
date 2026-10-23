@@ -52,7 +52,7 @@ export interface CoreEvent {
  * An inbox row to write. For an agent it targets one of its sessions: `session` when the sender named one (an address),
  * else the routing rule (Core.target) with `prefer` (the session that asked or queued it) or the thread's route as its first choice.
  */
-export interface Delivery { recipient: string; priority: Priority; kind?: string; session?: number; prefer?: number | null | undefined }
+export interface Delivery { recipient: string; priority: Priority; kind?: string; session?: number; prefer?: number | undefined }
 
 export type SessionStatus = 'busy' | 'idle' | 'waiting';
 /** One live client of an agent's token (docs/design/core.md, "Sessions"). What its client says about it is a hint, never authority. */
@@ -678,7 +678,7 @@ export class Core {
       for (const d of deliveries) {
         // One of the agent's sessions gets it (an address, else Core.target); none: any of its sessions reads it.
         const agent = d.recipient.startsWith('agent:') ? d.recipient.slice('agent:'.length) : null;
-        const session = agent === null ? null : d.session ?? this.target(agent, d.prefer !== undefined ? d.prefer : this.route(threadId, agent))?.id ?? null;
+        const session = agent === null ? null : d.session ?? this.targetIn(threadId, agent, d.prefer);
         run(this.db, 'INSERT INTO inbox (recipient, thread_id, event_seq, priority, kind, created_at, session) VALUES (?, ?, ?, ?, ?, ?, ?)',
           d.recipient, threadId, seq, d.priority, d.kind ?? 'message', created_at, session);
       }
@@ -940,8 +940,7 @@ export class Core {
       this.freeNames();
       for (const r of all<{ id: number; recipient: string; thread_id: string; session: number }>(this.db, `SELECT i.id, i.recipient, i.thread_id, i.session
         FROM inbox i JOIN sessions s ON s.id = i.session WHERE i.read_at IS NULL AND (s.name IS NULL OR s.polled_at < ?)`, closed)) {
-        const agent = r.recipient.slice('agent:'.length);
-        const to = this.target(agent, this.route(r.thread_id, agent))?.id ?? null;
+        const to = this.targetIn(r.thread_id, r.recipient.slice('agent:'.length));
         if (to === r.session) continue; // still its best session (it holds wait_for_message, say)
         run(this.db, 'UPDATE inbox SET session = ? WHERE id = ?', to, r.id);
         afterCommit(this.db, () => this.notify(r.recipient));
@@ -977,11 +976,16 @@ export class Core {
     const online = this.sessions(agentId).filter((s) => this.online(s)).sort((a, b) => b.active_at.localeCompare(a.active_at));
     return online.find((s) => s.id === prefer) ?? online.find((s) => !this.busy(s)) ?? online[0];
   }
-  /** Reply routing: the session that last wrote in a thread for its agent. */
-  route(threadId: string, agentId: string): number | null {
-    return one<{ session: number }>(this.db, 'SELECT session FROM routes WHERE thread_id = ? AND agent_id = ?', threadId, agentId)?.session ?? null;
+  /** Reply routing: the session that last wrote in a thread for its agent; null: none on purpose; undefined: no route. */
+  route(threadId: string, agentId: string): number | null | undefined {
+    return one<{ session: number | null }>(this.db, 'SELECT session FROM routes WHERE thread_id = ? AND agent_id = ?', threadId, agentId)?.session;
   }
-  noteRoute(threadId: string, agentId: string, session: number): void {
+  /** Where an agent's mail in a thread goes: `prefer` (who asked or queued it), else the thread's route, by `target`; untargeted where the route says none. */
+  private targetIn(threadId: string, agentId: string, prefer?: number): number | null {
+    const route = prefer ?? this.route(threadId, agentId);
+    return route === null ? null : this.target(agentId, route)?.id ?? null;
+  }
+  noteRoute(threadId: string, agentId: string, session: number | null): void {
     run(this.db, 'INSERT INTO routes (thread_id, agent_id, session) VALUES (?, ?, ?) ON CONFLICT (thread_id, agent_id) DO UPDATE SET session = excluded.session', threadId, agentId, session);
   }
 

@@ -107,6 +107,26 @@ describe('wake rules', () => {
     assert.deepEqual(s2.readInbox(), []);
   });
 
+  test('a tell_human batch holding items from two sessions of one agent routes to neither: its post and the human\'s reply there are for any of them', async () => {
+    const primary = new FakeEngine('claude', async (req, mcp) => {
+      const items = [...req.prompt.matchAll(/"item":"(m_[0-9a-f]{12})"/g)].map((m) => m[1]!);
+      if (items.length === 2) await call(mcp, 'tell_human', { principal: 'bob', text: 'Alice\'s scout asks about the staging box and the gateway.', items });
+    });
+    const { sb, settle, say, slack } = await boot(primary);
+    const as = (n: number) => sb.core.forAgent(sb.core.agent('alice/scout')!, hint(n, { repo: `repo-${n}` }, { poll: true }));
+    const [s1, s2] = [as(1), as(2)];
+    s1.sendMessage('bob', 'staging box?');
+    s2.sendMessage('bob', 'gateway?');
+    await settle();
+    const root = slack.posts.find((p) => p.channel === SLACK.ops && !p.threadTs)!;
+    await say(SLACK.bob, 'yes to both', { threadTs: root.ts });
+    await settle();
+    const thread = sb.core.threadBySlack(SLACK.ops, root.ts)!.id;
+    assert.deepEqual(sb.core.db.prepare("SELECT session FROM inbox WHERE thread_id = ? AND recipient = 'agent:alice/scout' ORDER BY id").all(thread).map((r) => r['session']), [null, null], 'untargeted');
+    assert.deepEqual([s1.counts().unread, s2.counts().unread], [2, 2], 'either session reads them');
+    assert.deepEqual(s2.readInbox().map((i) => i.body['text']), ['@bob Alice\'s scout asks about the staging box and the gateway.', 'yes to both']);
+  });
+
   test('send_message(to: ops) and a new urgent window wake it, and it sees the window; the decision, the clock and the report don\'t (P5)', async () => {
     const { sb, settle, primary, clock } = await boot();
     const scout = sb.core.forAgent(sb.core.agent('alice/scout')!);

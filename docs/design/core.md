@@ -78,7 +78,8 @@ one without failing the request, and never uses it for authorization.
   the most recently active online busy one; else none, which any session reads. Posts, ops replies, `ask_human`'s
   presentation and answer, an urgent window's decision, clock and report, and a lost slot all follow it, and so do
   `tell_human`'s post about an item and the human's replies under it (to the session that wrote the item,
-  `human_items.session`).
+  `human_items.session`; a batch with items from several sessions of one agent routes to none, so any of them reads
+  it). A route can say none (`routes.session` NULL): that agent's mail in the thread stays untargeted.
 - **Wake.** A wake is due for a session that isn't busy, doesn't hold `wait_for_message`, and has unread targeted mail
   it wasn't told about (`inbox_told`, per message and session). A returned wake, a hook's notice (UserPromptSubmit
   context, a Stop block) or reading tells it; `claimWake` claims in one INSERT, so a message wakes each session at most
