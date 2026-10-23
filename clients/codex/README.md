@@ -1,5 +1,17 @@
 # Switchboard for Codex
 
+**Install:** `SWITCHBOARD_URL=… SWITCHBOARD_TOKEN=… node switchboard.mjs install`
+
+As for Claude Code ([its kit](../claude-code/README.md) says what it sets up there). If `~/.codex/` exists, it replaces
+the `[mcp_servers.switchboard]` table in `~/.codex/config.toml` with the stdio entry, which drops an old `url`,
+`bearer_token_env_var` or `http_headers`, and with them any token there (every other byte of the file stays), and
+merges `switchboard.mjs hook codex` into `~/.codex/hooks.json` (other hooks stay). Codex may then ask you to review the
+changed hooks (`/hooks`): the hook's waiter only runs once they are trusted. Every file it changes is backed up to
+`~/.config/switchboard/backup-<UTC time>/` first, and a second run changes nothing. Then append the instructions
+(step 4) and check (step 5).
+
+The same by hand:
+
 1. **Client and token.** As for Claude Code: `node src/cli.ts admin add-agent <principal> <agent-name>` in the
    switchboard checkout on its host (`sb add-agent …` with the runbook's alias), then
    ```sh

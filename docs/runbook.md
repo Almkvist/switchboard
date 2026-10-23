@@ -270,9 +270,16 @@ Each agent's machine runs the switchboard client, [`clients/switchboard.mjs`](..
 Node ≥ 24, no dependencies), as its MCP server and hook. Setup per kit: [clients/claude-code/](../clients/claude-code/),
 [clients/codex/](../clients/codex/).
 
+- **Setup.** On the agent's machine: `SWITCHBOARD_URL=… SWITCHBOARD_TOKEN=… node switchboard.mjs install` (from
+  `clients/` in a checkout). It is idempotent: it writes the env file and the client to `~/.config/switchboard/`, merges
+  the hooks into `~/.claude/settings.json` and `~/.codex/hooks.json`, sets both MCP entries to the stdio client (in
+  `~/.codex/config.toml` that drops an old `url` and token), and first backs up each file it changes to
+  `~/.config/switchboard/backup-<UTC time>/`. It exits 1 without credentials, or when a file can't be edited safely
+  (that one is left as is). The kits' READMEs have the manual steps.
 - **Credentials.** The client reads `SWITCHBOARD_URL` and `SWITCHBOARD_TOKEN` from the environment, or from the file
   `SWITCHBOARD_ENV_FILE` names (the kits use `~/.config/switchboard/env`, mode 0600), so no token sits in an MCP
-  config. After `sb issue-token`, update that file and restart the session: the MCP server reads it once, at start.
+  config. After `sb issue-token`, run install with the new token (or update that file) and restart the session: the MCP
+  server reads it once, at start.
 - **Sessions.** Each Claude Code session and Codex thread on a token is a session, `<agent>@<repo>` (`-2`, `-3` on a
   collision). Mail to an agent targets the session that last wrote in the thread, else its most recently active online
   idle one. A session keeps its name 24 h after it was last seen (15 minutes if no client could ever wake it). Once its

@@ -1,5 +1,18 @@
 # Switchboard for Claude Code
 
+**Install:** `SWITCHBOARD_URL=… SWITCHBOARD_TOKEN=… node switchboard.mjs install`
+
+Run it with the URL and token an operator gives you (step 1) and `switchboard.mjs` from `clients/` in a checkout. One
+idempotent run sets up this machine: `~/.config/switchboard/env` (mode 0600) and the client beside it, the hooks merged
+into `~/.claude/settings.json` (step 3: the sync hook, and exactly one `rewake` entry on `Stop`; other hooks and
+settings stay as they are), and the user-scope MCP entry set to the stdio client with `claude mcp add-json` (without
+`claude` on `PATH`, it prints that command). Codex too, if `~/.codex/` exists ([its kit](../codex/README.md)). Every
+file it changes is backed up to `~/.config/switchboard/backup-<UTC time>/` first, and a second run changes nothing.
+Hooks take effect in running sessions at their next turn end, the MCP entry in sessions started from then on. Then
+append the instructions (step 4) and check (step 5).
+
+The same by hand:
+
 1. **Client and token.** An operator runs `node src/cli.ts admin add-agent <principal> <agent-name>` in the switchboard
    checkout on its host (`sb add-agent …` with the runbook's alias) and gives you the token. Install the client, one file
    with no dependencies (Node ≥ 24), and put the URL and token in an env file only you can read:

@@ -9,19 +9,22 @@
 //                                       old HTTP one; it ends with that Codex
 //   node switchboard.mjs rewake        Claude Code's asyncRewake Stop hook: waits beside the idle session, and exits 2 with
 //                                       the notice on stderr when mail arrives for it, which wakes it
+//   node switchboard.mjs install       sets this machine up in one idempotent run: the env file, this file, and Claude Code's
+//                                       and Codex's hooks and MCP entries, with backups of what it changes
 // Claude sessions are never woken through Claude Code's messaging socket: Claude Desktop holds those pushes for the
 // user's approval (docs/plans/known-issues.md).
 // SWITCHBOARD_URL and SWITCHBOARD_TOKEN come from the environment, or from the KEY=value file SWITCHBOARD_ENV_FILE names,
 // so no token sits in an MCP config. The token is never logged.
 
 import { execFile, execFileSync, spawn } from 'node:child_process';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readlinkSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import https from 'node:https';
 import { homedir, hostname, tmpdir } from 'node:os';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
+import { isDeepStrictEqual } from 'node:util';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** A waiter logs to a small file next to its lock (its stdio is closed); everything else to stderr. */
@@ -39,16 +42,21 @@ const host = () => hostname().replace(/[^A-Za-z0-9._-]/g, '-').slice(0, 100);
 /** A count from switchboard: a non-negative safe integer, else 0. Only counts reach the session's text, never another value. */
 const count = (v) => (Number.isSafeInteger(v) && v > 0 ? v : 0);
 
+/** SWITCHBOARD_URL and SWITCHBOARD_TOKEN from a KEY=value file. */
+function envFile(path) {
+  const vars = {};
+  for (const line of readFileSync(path, 'utf8').split('\n')) {
+    const m = /^\s*(?:export\s+)?(SWITCHBOARD_URL|SWITCHBOARD_TOKEN)\s*=\s*(.*?)\s*$/.exec(line);
+    if (m) vars[m[1]] = m[2].replace(/^(['"])(.*)\1$/, '$2');
+  }
+  return vars;
+}
+
 function credentials() {
-  const file = {};
+  let file = {};
   try {
     const path = process.env.SWITCHBOARD_ENV_FILE;
-    if (path) {
-      for (const line of readFileSync(path.replace(/^~(?=\/)/, homedir()), 'utf8').split('\n')) {
-        const m = /^\s*(?:export\s+)?(SWITCHBOARD_URL|SWITCHBOARD_TOKEN)\s*=\s*(.*?)\s*$/.exec(line);
-        if (m) file[m[1]] = m[2].replace(/^(['"])(.*)\1$/, '$2');
-      }
-    }
+    if (path) file = envFile(path.replace(/^~(?=\/)/, homedir()));
   } catch (err) {
     return { url: '', token: '', problem: `SWITCHBOARD_ENV_FILE can't be read (${err.code ?? 'error'})` };
   }
@@ -401,6 +409,204 @@ async function hook(kind) {
   return {};
 }
 
+
+// ---- install: this machine's setup in one idempotent run ----
+
+/** `s` as one POSIX shell word. */
+const shellWord = (s) => `'${s.replaceAll("'", `'\\''`)}'`;
+
+/**
+ * Claude Code's settings.json or Codex's hooks.json (`doc`) with switchboard's hooks: every hook whose command contains
+ * `switchboard` runs `sync` (one per event), UserPromptSubmit and Stop have it, and Stop has exactly one `rewake` entry
+ * (none when `rewake` is null; Codex has no asyncRewake). Every other hook and setting stays as it is.
+ */
+function withHooks(doc, sync, rewake) {
+  const out = structuredClone(doc);
+  out.hooks ??= {};
+  if (typeof out.hooks !== 'object' || Array.isArray(out.hooks)) throw new Error('has "hooks" that isn\'t an object');
+  const ours = (h) => typeof h?.command === 'string' && h.command.includes('switchboard');
+  const isRewake = (h) => ours(h) && (h.asyncRewake === true || /\srewake\s*$/.test(h.command));
+  const entry = { type: 'command', command: rewake, asyncRewake: true, timeout: 86400 };
+  for (const [event, groups] of Object.entries(out.hooks)) {
+    if (!Array.isArray(groups)) throw new Error(`has hooks.${event} that isn't a list`);
+    let synced = false;
+    let rewaking = false;
+    out.hooks[event] = groups.flatMap((g) => {
+      if (!Array.isArray(g?.hooks)) return [g];
+      const hooks = [];
+      for (const h of g.hooks) {
+        if (!ours(h)) hooks.push(h);
+        else if (isRewake(h)) {
+          if (rewake && event === 'Stop' && !rewaking) { rewaking = true; hooks.push(entry); }
+        } else if (!synced) { synced = true; hooks.push({ ...h, command: sync }); }
+      }
+      return hooks.length || !g.hooks.length ? [{ ...g, hooks }] : []; // a group emptied here goes
+    });
+  }
+  const has = (event, test) => (out.hooks[event] ?? []).some((g) => Array.isArray(g?.hooks) && g.hooks.some(test));
+  for (const event of ['UserPromptSubmit', 'Stop']) {
+    const missing = has(event, (h) => ours(h) && !isRewake(h)) ? [] : [{ type: 'command', command: sync, timeout: 5 }];
+    if (event === 'Stop' && rewake && !has(event, isRewake)) missing.push(entry);
+    if (missing.length) out.hooks[event] = [...(out.hooks[event] ?? []), { hooks: missing }];
+  }
+  return out;
+}
+
+/**
+ * `text`, a Codex config.toml, with its [mcp_servers.switchboard] table and the tables under it replaced by `table`, where
+ * the first stood, else appended. Every other byte stays; comment and blank lines just before the next table stay with it.
+ * null when switchboard is defined some other way (an inline table, dotted keys), which this doesn't edit.
+ */
+function withTable(text, table) {
+  const out = [];
+  let at = -1;
+  let current = '';
+  let ours = false;
+  let held = [];
+  for (const line of text.match(/[^\n]*\n|[^\n]+$/g) ?? []) {
+    const header = /^\s*\[\[?([^[\]]+)\]\]?\s*(?:#.*)?$/.exec(line.trimEnd());
+    if (header) {
+      current = header[1].replace(/["'\s]/g, '');
+      const next = current === 'mcp_servers.switchboard' || current.startsWith('mcp_servers.switchboard.');
+      if (ours && !next) out.push(...held);
+      held = [];
+      ours = next;
+      if (ours) { if (at < 0) at = out.length; continue; }
+    } else if (ours) {
+      if (/^\s*(?:#.*)?$/.test(line.trimEnd())) held.push(line); else held = [];
+      continue;
+    } else if (current === 'mcp_servers' ? /^\s*["']?switchboard["']?\s*[.=]/.test(line)
+      : !current && /^\s*["']?mcp_servers["']?\s*\.\s*["']?switchboard["']?\s*[.=]/.test(line)) {
+      return null;
+    }
+    out.push(line);
+  }
+  if (ours) out.push(...held);
+  if (at >= 0) { out.splice(at, 0, table); return out.join(''); }
+  const body = out.join('');
+  return body + (!body.trim() || body.endsWith('\n\n') ? '' : body.endsWith('\n') ? '\n' : '\n\n') + table;
+}
+
+/**
+ * `install`: the env file (from SWITCHBOARD_URL and SWITCHBOARD_TOKEN, else the one there), this file at
+ * ~/.config/switchboard/switchboard.mjs, and, where ~/.claude and ~/.codex exist, their hooks and stdio MCP entries, all
+ * with absolute paths. Each changed file is backed up first and written through a temp file. Returns the exit code.
+ */
+function install() {
+  const home = homedir();
+  const dir = join(home, '.config', 'switchboard');
+  const envPath = join(dir, 'env');
+  const client = join(dir, 'switchboard.mjs');
+  const short = (p) => (p.startsWith(`${home}/`) ? `~${p.slice(home.length)}` : p);
+  const fail = (why) => { console.error(`switchboard install: ${why}`); return 1; };
+  const { SWITCHBOARD_URL: url, SWITCHBOARD_TOKEN: token } = process.env;
+  if (Boolean(url) !== Boolean(token)) return fail('set both SWITCHBOARD_URL and SWITCHBOARD_TOKEN, or neither to keep those in ~/.config/switchboard/env');
+  if (url) {
+    if (!/^https?:\/\/\S+$/.test(url) || !URL.canParse(url)) return fail('SWITCHBOARD_URL isn\'t an http(s) URL');
+    if (!/^\S+$/.test(token)) return fail('SWITCHBOARD_TOKEN can\'t hold spaces or line breaks');
+  } else {
+    let saved = {};
+    try { saved = envFile(envPath); } catch { /* none yet */ }
+    if (!saved.SWITCHBOARD_URL || !saved.SWITCHBOARD_TOKEN) {
+      return fail('no credentials: run it with SWITCHBOARD_URL and SWITCHBOARD_TOKEN set, or put them in ~/.config/switchboard/env');
+    }
+  }
+
+  const changed = [];
+  const problems = [];
+  const stamp = new Date().toISOString().replace(/[-:]/g, '');
+  let backups = '';
+  /**
+   * Writes `data` to `path` unless it holds that already (with `mode` too, if `exact`): the old file first to the run's
+   * backup directory, then a temp file renamed over it (over the file a symlink points at, so the symlink stays).
+   */
+  const put = (path, data, mode, what, exact = false) => {
+    let real = path;
+    let old = null;
+    try { real = realpathSync(path); old = readFileSync(real); } catch { /* a new file */ }
+    if (old?.equals(Buffer.from(data)) && (!exact || (statSync(real).mode & 0o777) === mode)) return false;
+    try {
+      if (old) {
+        backups ||= join(dir, `backup-${stamp}`);
+        const copy = join(backups, relative(home, path));
+        mkdirSync(dirname(copy), { recursive: true, mode: 0o700 });
+        writeFileSync(copy, old, { mode: 0o600 });
+      }
+      const tmp = `${real}.${process.pid}.tmp`;
+      writeFileSync(tmp, data, { mode });
+      chmodSync(tmp, mode); // whatever the umask
+      renameSync(tmp, real);
+    } catch (err) {
+      throw new Error(`can't be written (${err.code ?? err.message})`);
+    }
+    changed.push(what);
+    return true;
+  };
+  const read = (path) => {
+    try { return readFileSync(path, 'utf8'); } catch (err) { if (err.code === 'ENOENT') return ''; throw new Error(`can't be read (${err.code})`); }
+  };
+  /** Each file on its own: one that can't be edited safely is left as it is, and the rest still happens. */
+  const step = (path, edit) => { try { return edit(); } catch (err) { problems.push(`${short(path)} ${err.message}; left as is`); return false; } };
+  const hooks = (path, sync, rewake) => step(path, () => {
+    const text = read(path);
+    let doc;
+    try { doc = text.trim() ? JSON.parse(text) : {}; } catch { throw new Error('isn\'t valid JSON'); }
+    if (!doc || typeof doc !== 'object' || Array.isArray(doc)) throw new Error('isn\'t a JSON object');
+    const next = withHooks(doc, sync, rewake);
+    return !isDeepStrictEqual(next, doc) && put(path, `${JSON.stringify(next, null, 2)}\n`, 0o600, `${short(path)}: switchboard hooks set`);
+  });
+
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  chmodSync(dir, 0o700);
+  if (url) step(envPath, () => put(envPath, `SWITCHBOARD_URL=${url}\nSWITCHBOARD_TOKEN=${token}\n`, 0o600, `${short(envPath)}: credentials written`, true));
+  const self = fileURLToPath(import.meta.url);
+  let installed = false;
+  try { installed = realpathSync(self) === realpathSync(client); } catch { /* not installed yet */ }
+  if (!installed) step(client, () => put(client, readFileSync(self), 0o644, `${short(client)}: installed`, true));
+
+  const run = (args) => `SWITCHBOARD_ENV_FILE=${shellWord(envPath)} node ${shellWord(client)} ${args}`;
+  const stdio = { type: 'stdio', command: 'node', args: [client, 'mcp'], env: { SWITCHBOARD_ENV_FILE: envPath } };
+  if (existsSync(join(home, '.claude'))) {
+    hooks(join(home, '.claude', 'settings.json'), run('hook'), run('rewake'));
+    let current;
+    try { current = JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8')).mcpServers?.switchboard; } catch { /* none yet */ }
+    if (!isDeepStrictEqual(current, stdio)) {
+      const json = JSON.stringify(stdio);
+      const manual = `claude mcp remove switchboard -s user 2>/dev/null; claude mcp add-json switchboard -s user ${shellWord(json)}`;
+      const claude = (...args) => execFileSync('claude', ['mcp', ...args], { stdio: ['ignore', 'pipe', 'pipe'], timeout: 60_000 });
+      try {
+        try { claude('remove', 'switchboard', '-s', 'user'); } catch (err) { if (err.code === 'ENOENT') throw err; } // none yet: fine
+        claude('add-json', 'switchboard', '-s', 'user', json);
+        changed.push('Claude Code: the switchboard MCP server is the stdio client (user scope)');
+      } catch (err) {
+        if (err.code === 'ENOENT') changed.push(`Claude Code: \`claude\` isn't on PATH, so run this for its MCP entry:\n    ${manual}`);
+        else problems.push(`Claude Code: \`claude mcp add-json\` failed (${String(err.stderr || err.message).trim().split('\n')[0]}); run:\n    ${manual}`);
+      }
+    }
+  }
+  let codexHooks = false;
+  if (existsSync(join(home, '.codex'))) {
+    const config = join(home, '.codex', 'config.toml');
+    const table = `[mcp_servers.switchboard]\ncommand = "node"\nargs = [${JSON.stringify(client)}, "mcp"]\n` +
+      `env = { SWITCHBOARD_ENV_FILE = ${JSON.stringify(envPath)} }\ndefault_tools_approval_mode = "approve"\n`;
+    step(config, () => {
+      const next = withTable(read(config), table);
+      if (next === null) throw new Error('defines switchboard some other way (an inline table or dotted keys)');
+      return put(config, next, 0o600, `${short(config)}: switchboard is the stdio client (no url, bearer token or headers)`);
+    });
+    codexHooks = hooks(join(home, '.codex', 'hooks.json'), run('hook codex'), null);
+  }
+
+  if (!changed.length && !problems.length) console.log('switchboard install: everything is already set up; nothing changed.');
+  if (changed.length) {
+    console.log(['switchboard install:', ...changed.map((c) => `  ${c}`), ...(backups ? [`  backups of what it changed: ${short(backups)}/`] : [])].join('\n'));
+    console.log('Hooks take effect in running Claude Code sessions at their next turn end; MCP entries in sessions started from now on.');
+    if (codexHooks) console.log('Codex may ask you to review the changed hooks (/hooks): its hook waiter only runs once they are trusted.');
+  }
+  for (const p of problems) console.error(`switchboard install: ${p}`);
+  return problems.length ? 1 : 0;
+}
+
 const mode = process.argv[2] ?? 'mcp';
 if (mode === 'hook') {
   hook(process.argv[3] === 'codex' ? 'codex' : 'claude').then((out) => process.stdout.write(JSON.stringify(out)), () => process.stdout.write('{}'));
@@ -410,7 +616,9 @@ if (mode === 'hook') {
   void waiter(process.argv[4], process.argv[5]);
 } else if (mode === 'rewake') {
   void rewake();
+} else if (mode === 'install') {
+  try { process.exitCode = install(); } catch (err) { console.error(`switchboard install: ${err.message}`); process.exitCode = 1; }
 } else {
-  log(`unknown mode '${mode}': use mcp (the default), hook, wake codex, or rewake`);
+  log(`unknown mode '${mode}': use mcp (the default), hook, wake codex, rewake, or install`);
   process.exitCode = 2;
 }

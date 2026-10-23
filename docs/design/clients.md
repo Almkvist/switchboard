@@ -63,6 +63,23 @@ setup beyond this.
     Linux no longer a waiter's or rewaker's) is replaced. Each logs a few lines to a `.log` next to its lock, truncated
     at start. An idle session is woken by its `rewake` Stop hook (Claude), or by its hook's waiter or the stdio client
     (Codex).
+  - `node switchboard.mjs install`: sets the machine up in one idempotent run. Credentials: both `SWITCHBOARD_URL` and
+    `SWITCHBOARD_TOKEN` from the environment (then written to `~/.config/switchboard/env`, dir 0700, file 0600), else
+    that file's; none, or only one of the two: exit 1 with one line. It copies itself to
+    `~/.config/switchboard/switchboard.mjs` (0644) unless it is that file, and every command it writes uses that path
+    and `SWITCHBOARD_ENV_FILE=<home>/.config/switchboard/env`, absolute and single-quoted for the shell. Where
+    `~/.claude/` exists: in `~/.claude/settings.json` (created if missing) every hook whose command contains
+    `switchboard` runs the sync hook (`… hook`), once per event, rewake entries aside; `UserPromptSubmit` and `Stop` have
+    it, and `Stop` has exactly one `rewake` entry (`"asyncRewake": true, "timeout": 86400`). Then, unless
+    `~/.claude.json` already holds that user-scope entry, `claude mcp remove switchboard -s user` (its failure ignored)
+    and `claude mcp add-json switchboard -s user '<stdio json>'`, by execFile with no shell; without `claude` on `PATH`
+    it prints the command. Where `~/.codex/` exists: the `[mcp_servers.switchboard]` table and the tables under it in
+    `config.toml` become the stdio entry where they stood (text-level, every other byte kept; switchboard as an inline
+    table or dotted keys is refused), and `hooks.json` gets the same merge with `hook codex` and no rewake. Other hooks
+    and settings stay. A file is written only when its content changes: first copied to
+    `~/.config/switchboard/backup-<UTC time>/` (0600), then through a temp file renamed onto it (onto a symlink's
+    target), mode 0600. A file it can't parse is left as is, and the run exits 1. It prints one line per change, where
+    the backups are and when things take effect, or that nothing changed; never the token.
 - `clients/claude-code/`: `README.md`, `mcp.json` (stdio: `node ${HOME}/.config/switchboard/switchboard.mjs mcp` with
   `SWITCHBOARD_ENV_FILE`), `settings-snippet.json` (both hooks run `switchboard.mjs hook`; Stop also runs
   `switchboard.mjs rewake` with `"asyncRewake": true, "timeout": 86400`), `AGENTS-snippet.md`.
@@ -88,7 +105,11 @@ the thread), a Codex run inside a Claude Code session taken for Codex by its `in
 thread, `codex queue` for its thread, gone with its Codex, none for a thread that isn't a uuid), `rewake` (exit 2 with
 exactly the notice for its own session's wake, a wake for another ignored, one per Claude Code process, exit 0 when that
 process is gone and on SIGTERM with its lock freed, the registry's status sent and re-polled on a change, sanitized
-counts), mcp and hook modes never writing to a fake messaging socket, and the kits' hook commands and MCP entry.
+counts), mcp and hook modes never writing to a fake messaging socket, the kits' hook commands and MCP entry, and
+`install` in a temp home whose path has a space and a quote (the exact merged JSON and TOML with the old token gone,
+the commands run through a shell against the server, backups, a second run that changes nothing, exit 1 without
+credentials, a fake `claude`'s argv, no world-readable file but the client, the command printed when `claude` is
+missing, a file it can't parse left as is).
 
 ## Non-goals
 

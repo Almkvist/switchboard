@@ -4,7 +4,7 @@
 
 import assert from 'node:assert/strict';
 import { type ChildProcessWithoutNullStreams, execFileSync, spawn, spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
 import { hostname, tmpdir } from 'node:os';
@@ -517,6 +517,270 @@ describe('kit configs', () => {
     const toml = readFileSync(new URL('../clients/codex/config-snippet.toml', import.meta.url), 'utf8');
     assert.match(toml, /^command = "node"\nargs = \["\/home\/you\/\.config\/switchboard\/switchboard\.mjs", "mcp"\]\nenv = \{ SWITCHBOARD_ENV_FILE = "\/home\/you\/\.config\/switchboard\/env" \}$/m);
     assert.match(toml, /^default_tools_approval_mode = "approve"$/m);
+  });
+});
+
+describe('install: one idempotent command sets up this machine', () => {
+  const OLD = 'sb_old_http_token_0123456789';
+  const q = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
+  /** `node <client> install` with only HOME, PATH and `env`, as another principal's agent runs it. */
+  const install = (home: string, env: Record<string, string>, path: string, client = CLIENT) => {
+    const r = spawnSync(process.execPath, [client, 'install'], { env: { HOME: home, PATH: path, ...env }, encoding: 'utf8', timeout: 30_000 });
+    return { code: r.status, out: r.stdout, err: r.stderr };
+  };
+  /** Where install puts the client under `home`, and the commands and MCP entry it writes: absolute, quoted for a shell. */
+  const paths = (home: string) => {
+    const dir = join(home, '.config', 'switchboard');
+    const env = join(dir, 'env');
+    const client = join(dir, 'switchboard.mjs');
+    const run = (args: string) => `SWITCHBOARD_ENV_FILE=${q(env)} node ${q(client)} ${args}`;
+    return { dir, env, client, sync: run('hook'), codex: run('hook codex'), rewake: run('rewake'),
+      stdio: { type: 'stdio', command: 'node', args: [client, 'mcp'], env: { SWITCHBOARD_ENV_FILE: env } } };
+  };
+  /** A fake `claude`, alone on PATH: records its argv and keeps user-scope MCP servers in ~/.claude.json, as Claude Code does. */
+  const fakeClaude = () => {
+    const dir = tmp();
+    const log = join(dir, 'argv.log');
+    writeFileSync(join(dir, 'claude'), `#!${process.execPath}
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + '\\n');
+const file = process.env.HOME + '/.claude.json';
+const doc = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {};
+const servers = doc.mcpServers ?? {};
+if (args[1] === 'remove' && !servers[args[2]]) { console.error('No MCP server found with name: ' + args[2]); process.exit(1); }
+if (args[1] === 'remove') delete servers[args[2]];
+if (args[1] === 'add-json') servers[args[2]] = JSON.parse(args[5]);
+fs.writeFileSync(file, JSON.stringify({ ...doc, mcpServers: servers }), { mode: 0o600 });
+`);
+    chmodSync(join(dir, 'claude'), 0o755);
+    return { path: dir, calls: () => (existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l) as string[]) : []) };
+  };
+  /** A shell running `command` as Claude Code or Codex runs a hook command: `input` on stdin. */
+  const shell = (command: string, home: string, input: string) => new Promise<{ code: number | null; stdout: string }>((done) => {
+    const child = spawn('/bin/sh', ['-c', command], { env: { HOME: home, PATH: process.env['PATH'] ?? '', XDG_RUNTIME_DIR: runtime } });
+    let stdout = '';
+    child.stdout.on('data', (c) => { stdout += c; });
+    child.on('close', (code) => done({ code, stdout }));
+    child.stdin.end(input);
+  });
+
+  const SETTINGS = {
+    model: 'opus',
+    permissions: { allow: ['Bash(git status)'], deny: ['Read(./.env)'] },
+    hooks: {
+      PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'echo pre-bash', timeout: 3 }] }],
+      UserPromptSubmit: [{ hooks: [{ type: 'command', command: `curl -s -H 'Authorization: Bearer ${OLD}' http://switchboard.example.ts.net:7420/unread`, timeout: 10 }] }],
+      Stop: [
+        { hooks: [{ type: 'command', command: 'notify-send done' }, { type: 'command', command: 'node /opt/switchboard/hook.mjs' }, { type: 'command', command: 'node /opt/switchboard/hook.mjs' }] },
+        { hooks: [{ type: 'command', command: 'node /opt/switchboard/switchboard.mjs rewake', timeout: 600 }, { type: 'command', command: 'echo stop-2' }] },
+        { hooks: [{ type: 'command', command: 'node /opt/switchboard/switchboard.mjs rewake', asyncRewake: true }] },
+      ],
+    },
+    statusLine: { type: 'command', command: 'echo ok' },
+  };
+  const CODEX_HOOKS = {
+    hooks: {
+      SessionStart: [{ hooks: [{ type: 'command', command: 'echo codex-start' }] }],
+      Stop: [{ hooks: [
+        { type: 'command', command: 'SWITCHBOARD_ENV_FILE="$HOME/.config/switchboard/env" node "$HOME/.config/switchboard/switchboard.mjs" hook codex', timeout: 5 },
+        { type: 'command', command: 'node /opt/switchboard/switchboard.mjs rewake', asyncRewake: true, timeout: 86400 },
+      ] }],
+    },
+  };
+  const TOML = `# my Codex config
+model = "gpt-5"
+approval_policy = "on-request"
+
+[mcp_servers.switchboard]
+url = "http://switchboard.example.ts.net:7420/mcp"
+bearer_token_env_var = "SWITCHBOARD_TOKEN"
+
+[mcp_servers.switchboard.http_headers]
+Authorization = "Bearer ${OLD}"
+
+# docs, local
+[mcp_servers.docs]
+command = "docs-mcp"
+args = ["--stdio"]
+
+[mcp_servers.docs.env]
+DOCS_HOME = "/srv/docs"
+
+[profiles.fast]
+model = "gpt-5-mini"
+`;
+  /** A home with a space and a quote in its path and Claude Code's and Codex's configs: other settings and hooks, and the old HTTP setup with a token. */
+  const sampleHome = () => {
+    const home = join(tmp(), "alice's home");
+    for (const d of ['.claude', '.codex', 'dotfiles']) mkdirSync(join(home, d), { recursive: true });
+    writeFileSync(join(home, '.claude', 'settings.json'), JSON.stringify(SETTINGS, null, 4));
+    writeFileSync(join(home, '.claude.json'), JSON.stringify({ numStartups: 3, mcpServers: { switchboard: { type: 'http', url: 'http://switchboard.example.ts.net:7420/mcp', headers: { Authorization: `Bearer ${OLD}` } } } }), { mode: 0o600 });
+    writeFileSync(join(home, 'dotfiles', 'codex-hooks.json'), JSON.stringify(CODEX_HOOKS));
+    symlinkSync(join(home, 'dotfiles', 'codex-hooks.json'), join(home, '.codex', 'hooks.json'));
+    writeFileSync(join(home, '.codex', 'config.toml'), TOML);
+    return home;
+  };
+  const CREDS = { SWITCHBOARD_URL: 'http://127.0.0.1:9', SWITCHBOARD_TOKEN: 'sb_test_token' };
+
+  test('sets up Claude Code and Codex: credentials, the client, hooks merged, stdio MCP entries; the old token gone, everything else kept, backups written', async () => {
+    const home = sampleHome();
+    const p = paths(home);
+    const claude = fakeClaude();
+    const token = w.core.issueToken('alice/scout');
+    const r = install(home, { SWITCHBOARD_URL: url, SWITCHBOARD_TOKEN: token }, claude.path);
+    assert.equal(r.code, 0, r.err);
+    assert.ok(![r.out, r.err].some((o) => o.includes(token)), 'the token is never printed');
+    assert.equal(readFileSync(p.env, 'utf8'), `SWITCHBOARD_URL=${url}\nSWITCHBOARD_TOKEN=${token}\n`);
+    assert.deepEqual([statSync(p.dir).mode & 0o777, statSync(p.env).mode & 0o777], [0o700, 0o600]);
+    assert.ok(readFileSync(p.client).equals(readFileSync(CLIENT)), 'the client is installed');
+    assert.equal(statSync(p.client).mode & 0o777, 0o644);
+
+    const json = (f: string) => JSON.parse(readFileSync(join(home, f), 'utf8'));
+    assert.deepEqual(json('.claude/settings.json'), {
+      ...SETTINGS,
+      hooks: {
+        PreToolUse: SETTINGS.hooks.PreToolUse,
+        UserPromptSubmit: [{ hooks: [{ type: 'command', command: p.sync, timeout: 10 }] }],
+        Stop: [
+          { hooks: [{ type: 'command', command: 'notify-send done' }, { type: 'command', command: p.sync }] },
+          { hooks: [{ type: 'command', command: p.rewake, asyncRewake: true, timeout: 86400 }, { type: 'command', command: 'echo stop-2' }] },
+        ],
+      },
+    }, 'switchboard hooks run the sync hook, once per event; Stop has exactly one rewake (the first, even without asyncRewake, made whole); every other hook and setting kept');
+    assert.ok(lstatSync(join(home, '.codex', 'hooks.json')).isSymbolicLink(), 'a symlinked config stays a symlink');
+    assert.deepEqual(json('.codex/hooks.json'), { hooks: {
+      SessionStart: CODEX_HOOKS.hooks.SessionStart,
+      Stop: [{ hooks: [{ type: 'command', command: p.codex, timeout: 5 }] }],
+      UserPromptSubmit: [{ hooks: [{ type: 'command', command: p.codex, timeout: 5 }] }],
+    } }, 'Codex: the same, with no rewake');
+    assert.equal(readFileSync(join(home, '.codex', 'config.toml'), 'utf8'), `# my Codex config
+model = "gpt-5"
+approval_policy = "on-request"
+
+[mcp_servers.switchboard]
+command = "node"
+args = ["${p.client}", "mcp"]
+env = { SWITCHBOARD_ENV_FILE = "${p.env}" }
+default_tools_approval_mode = "approve"
+
+# docs, local
+[mcp_servers.docs]
+command = "docs-mcp"
+args = ["--stdio"]
+
+[mcp_servers.docs.env]
+DOCS_HOME = "/srv/docs"
+
+[profiles.fast]
+model = "gpt-5-mini"
+`, 'the switchboard table and its sub-tables replaced in place; every other byte kept');
+    for (const f of ['.claude/settings.json', '.codex/hooks.json', '.codex/config.toml', '.claude.json']) {
+      assert.ok(!readFileSync(join(home, f), 'utf8').includes(OLD), `${f}: the old token is gone`);
+    }
+
+    const calls = claude.calls();
+    assert.deepEqual(calls.map((c) => c.slice(0, 5)), [['mcp', 'remove', 'switchboard', '-s', 'user'], ['mcp', 'add-json', 'switchboard', '-s', 'user']]);
+    assert.equal(calls[1]!.length, 6);
+    assert.deepEqual(JSON.parse(calls[1]![5]!), p.stdio);
+
+    const backups = readdirSync(p.dir).filter((f) => f.startsWith('backup-'));
+    assert.equal(backups.length, 1, 'one backup directory for the run');
+    assert.match(backups[0]!, /^backup-\d{8}T\d{6}\.\d{3}Z$/);
+    const b = join(p.dir, backups[0]!);
+    assert.equal(readFileSync(join(b, '.claude', 'settings.json'), 'utf8'), JSON.stringify(SETTINGS, null, 4));
+    assert.equal(readFileSync(join(b, '.codex', 'hooks.json'), 'utf8'), JSON.stringify(CODEX_HOOKS));
+    assert.equal(readFileSync(join(b, '.codex', 'config.toml'), 'utf8'), TOML);
+    assert.equal(statSync(b).mode & 0o777, 0o700);
+    for (const f of ['.claude/settings.json', '.codex/hooks.json', '.codex/config.toml']) assert.equal(statSync(join(b, f)).mode & 0o777, 0o600, f);
+    assert.ok(r.out.includes(backups[0]!), 'the summary says where the backups are');
+    assert.match(r.out, /next turn end/);
+    assert.match(r.out, /Codex may ask you to review the changed hooks/);
+
+    for (const f of readdirSync(home, { recursive: true }) as string[]) {
+      const st = lstatSync(join(home, f));
+      if (st.isFile() && join(home, f) !== p.client) assert.equal(st.mode & 0o004, 0, `${f} isn't world-readable`);
+    }
+
+    for (const [i, [command, kind]] of [[p.sync, 'claude'], [p.codex, 'codex']].entries()) {
+      const run = await shell(command!, home, JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: sid(90 + i), cwd: checkout() }));
+      assert.deepEqual([run.code, JSON.parse(run.stdout)], [0, {}], command);
+      assert.ok(session(`${kind}:${sid(90 + i)}`), `${command}: the hook reached switchboard`);
+    }
+    assert.equal((await shell(p.rewake, home, '{}')).code, 0, 'the rewake command runs: headless here, so it exits 0 at once');
+  });
+
+  test('a second run changes nothing and says so: from the installed copy too, with the credentials in the env file', () => {
+    const home = sampleHome();
+    const p = paths(home);
+    const claude = fakeClaude();
+    assert.equal(install(home, CREDS, claude.path).code, 0);
+    const files = () => (readdirSync(home, { recursive: true }) as string[]).sort().map((f) => {
+      const st = lstatSync(join(home, f));
+      return [f, st.ino, st.mtimeMs, st.mode, st.isFile() ? readFileSync(join(home, f), 'utf8') : ''];
+    });
+    const before = files();
+    const calls = claude.calls().length;
+    const runs: Array<[Record<string, string>, string]> = [[CREDS, CLIENT], [{}, p.client]];
+    for (const [env, client] of runs) {
+      const r = install(home, env, claude.path, client);
+      assert.deepEqual([r.code, r.out, r.err], [0, 'switchboard install: everything is already set up; nothing changed.\n', '']);
+      assert.deepEqual(files(), before);
+      assert.equal(claude.calls().length, calls, 'and no claude mcp runs');
+    }
+  });
+
+  test('no credentials anywhere, or only one of the two: exit 1 with one line, and nothing written', () => {
+    const home = tmp();
+    mkdirSync(join(home, '.claude'));
+    const envs: Array<Record<string, string>> = [{}, { SWITCHBOARD_TOKEN: 'sb_only_token' }, { SWITCHBOARD_URL: 'http://127.0.0.1:9' }];
+    for (const env of envs) {
+      const r = install(home, env, tmp());
+      assert.equal(r.code, 1);
+      assert.equal(r.out, '');
+      assert.equal(r.err.trimEnd().split('\n').length, 1, r.err);
+      assert.match(r.err, /SWITCHBOARD_URL and SWITCHBOARD_TOKEN/);
+      assert.ok(!r.err.includes('sb_only_token'), 'the token is never printed');
+      assert.deepEqual(readdirSync(home), ['.claude'], 'nothing written');
+    }
+  });
+
+  test('a fresh machine without `claude` on PATH: the configs as the kits have them, and the one command to run printed', () => {
+    const home = join(tmp(), "bob's home");
+    mkdirSync(join(home, '.claude'), { recursive: true });
+    mkdirSync(join(home, '.codex'));
+    const p = paths(home);
+    const r = install(home, CREDS, tmp());
+    assert.equal(r.code, 0, r.err);
+    const ours = (command: string) => command.replace('"$HOME/.config/switchboard/env"', q(p.env)).replace('"$HOME/.config/switchboard/switchboard.mjs"', q(p.client));
+    const kit = (f: string) => JSON.parse(readFileSync(new URL(`../clients/${f}`, import.meta.url), 'utf8'), (k, v) => (k === 'command' ? ours(v) : v));
+    assert.deepEqual(JSON.parse(readFileSync(join(home, '.claude', 'settings.json'), 'utf8')), kit('claude-code/settings-snippet.json'));
+    assert.deepEqual(JSON.parse(readFileSync(join(home, '.codex', 'hooks.json'), 'utf8')), kit('codex/hooks.json'));
+    const toml = readFileSync(new URL('../clients/codex/config-snippet.toml', import.meta.url), 'utf8').replaceAll('/home/you', home);
+    assert.equal(readFileSync(join(home, '.codex', 'config.toml'), 'utf8'), `${toml.split('\n').filter((l) => l && !l.startsWith('#')).join('\n')}\n`);
+    assert.ok(!readdirSync(p.dir).some((f) => f.startsWith('backup-')), 'nothing to back up');
+    const command = r.out.split('\n').map((l) => l.trim()).find((l) => l.startsWith('claude mcp '));
+    assert.ok(command, r.out);
+    const claude = fakeClaude();
+    spawnSync('/bin/sh', ['-c', command], { env: { HOME: home, PATH: claude.path } });
+    assert.deepEqual(JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8')).mcpServers.switchboard, p.stdio, 'the printed command, run in a shell, adds the stdio entry');
+  });
+
+  test('a settings.json that isn\'t JSON, and switchboard as an inline table in config.toml, are left as they are: exit 1, saying so; the rest is set up', () => {
+    const home = tmp();
+    mkdirSync(join(home, '.claude'));
+    mkdirSync(join(home, '.codex'));
+    const settings = '{ "model": "opus", }';
+    const toml = '[mcp_servers]\nswitchboard = { url = "http://switchboard.example.ts.net:7420/mcp" }\n';
+    writeFileSync(join(home, '.claude', 'settings.json'), settings);
+    writeFileSync(join(home, '.codex', 'config.toml'), toml);
+    const r = install(home, CREDS, fakeClaude().path);
+    assert.equal(r.code, 1);
+    assert.equal(readFileSync(join(home, '.claude', 'settings.json'), 'utf8'), settings);
+    assert.equal(readFileSync(join(home, '.codex', 'config.toml'), 'utf8'), toml);
+    assert.match(r.err, /~\/\.claude\/settings\.json isn't valid JSON; left as is/);
+    assert.match(r.err, /~\/\.codex\/config\.toml defines switchboard some other way.*; left as is/);
+    assert.ok(existsSync(join(home, '.codex', 'hooks.json')) && existsSync(paths(home).client), 'the rest is set up');
   });
 });
 
