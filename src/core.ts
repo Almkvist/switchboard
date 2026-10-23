@@ -935,7 +935,7 @@ export class Core {
         const agent = r.recipient.slice('agent:'.length);
         const to = this.target(agent, this.route(r.thread_id, agent))?.id ?? null;
         if (to === r.session) continue; // still its best session (it holds wait_for_message, say)
-        run(this.db, 'UPDATE inbox SET session = ?, told = 0 WHERE id = ?', to, r.id);
+        run(this.db, 'UPDATE inbox SET session = ? WHERE id = ?', to, r.id);
         afterCommit(this.db, () => this.notify(r.recipient));
       }
     });
@@ -1015,10 +1015,11 @@ export class Core {
   claimWake(s: Session): boolean { return !this.holding.has(s.id) && !this.busy(s) && this.tell(s.id) > 0; }
   /**
    * Marks a session told about its unread targeted mail (a returned wake, a hook's notice) and says how many messages were
-   * new to it. One UPDATE claims them, so each message wakes a session at most once, and two clients never both wake it.
+   * new to it. One INSERT claims them, per message and session, so each message wakes a session at most once, even after
+   * it moved away and back, and two clients never both wake it.
    */
   tell(sessionId: number): number {
-    return run(this.db, 'UPDATE inbox SET told = 1 WHERE session = ? AND read_at IS NULL AND told = 0', sessionId).changes;
+    return run(this.db, 'INSERT OR IGNORE INTO inbox_told (inbox_id, session) SELECT id, ? FROM inbox WHERE session = ? AND read_at IS NULL', sessionId, sessionId).changes;
   }
   /** Unread mail targeted at the session itself. */
   targeted(sessionId: number): number {

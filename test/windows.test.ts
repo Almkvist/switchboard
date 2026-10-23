@@ -1233,7 +1233,7 @@ describe('migrations', () => {
     const stale = ['approval_decision', 'window_clock', 'window_report'];
     const after = dump(db);
     assert.ok(after['mutes']!.every((m) => typeof m['set_at'] === 'string' && m['set_at'] !== ''), 'P4: migration 11 dates every mute');
-    assert.deepEqual({ ...after, mutes: after['mutes']!.map(({ set_at: _, set_mark: __, ...m }) => m) }, { ...before, inbox: before['inbox']!.map((r) => ({ ...(r['recipient'] === 'ops' && stale.includes(String(r['kind'])) ? { ...r, read_at: r['created_at'] } : r), session: null, told: 0 })), // migration 15: untargeted
+    assert.deepEqual({ ...after, mutes: after['mutes']!.map(({ set_at: _, set_mark: __, ...m }) => m) }, { ...before, inbox: before['inbox']!.map((r) => ({ ...(r['recipient'] === 'ops' && stale.includes(String(r['kind'])) ? { ...r, read_at: r['created_at'] } : r), session: null })), // migration 15: untargeted
       windows: before['windows']!.map((r) => ({ ...r, title: titleFrom(String(r['plan'])) })), // P2: migration 10 adds each window's title
       principals: before['principals']!.map((r) => ({ ...r, delegate_agent_id: null })) }, // P4: migration 11, no delegate yet
       'nothing lost or changed, except stale ops wake rows marked read, a title on each window and no delegate on each principal');

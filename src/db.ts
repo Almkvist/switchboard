@@ -440,9 +440,10 @@ export const MIGRATIONS: string[] = [
   // 15: sessions. An agent's token can have many live sessions, keyed per agent by its client ('claude:<session id>',
   // 'codex:<thread id>'), each named uniquely among the agent's current ones (NULL once gone) and holding what its client
   // last said about it: hints, never authority. An inbox row may target one session (NULL: any session of the agent reads
-  // it, as before) and records whether that session was told about it (a wake or a hook notice), so a message wakes a
-  // session once. routes: the session that last wrote in a thread for its agent, where replies go; changes and asks keep
-  // the session that queued or asked them. Existing rows: no sessions, every inbox row untargeted.
+  // it, as before). inbox_told: which sessions were told about which rows (a wake or a hook notice), so a message wakes
+  // each session at most once, even when it moves between them. routes: the session that last wrote in a thread for its
+  // agent, where replies go; changes and asks keep the session that queued or asked them. Existing rows: no sessions,
+  // every inbox row untargeted.
   `
   CREATE TABLE sessions (
     id        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -465,8 +466,12 @@ export const MIGRATIONS: string[] = [
   );
   CREATE UNIQUE INDEX sessions_name ON sessions (agent_id, name);
   ALTER TABLE inbox ADD COLUMN session INTEGER REFERENCES sessions(id);
-  ALTER TABLE inbox ADD COLUMN told INTEGER NOT NULL DEFAULT 0;
   CREATE INDEX inbox_session ON inbox (session, read_at);
+  CREATE TABLE inbox_told (
+    inbox_id INTEGER NOT NULL REFERENCES inbox(id),
+    session  INTEGER NOT NULL REFERENCES sessions(id),
+    PRIMARY KEY (inbox_id, session)
+  );
   CREATE TABLE routes (
     thread_id TEXT NOT NULL REFERENCES threads(id),
     agent_id  TEXT NOT NULL REFERENCES agents(id),

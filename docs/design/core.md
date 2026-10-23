@@ -77,9 +77,9 @@ one without failing the request, and never uses it for authorization.
   the most recently active online busy one; else none, which any session reads. Posts, ops replies, `ask_human`'s
   presentation and answer, an urgent window's decision, clock and report, and a lost slot all follow it.
 - **Wake.** A wake is due for a session that isn't busy, doesn't hold `wait_for_message`, and has unread targeted mail
-  it wasn't told about (`inbox.told`). A returned wake, a hook's notice (UserPromptSubmit context, a Stop block) or
-  reading tells it; `claimWake` claims in one UPDATE, so a message wakes a session once and two clients never both
-  wake it. Untargeted mail never wakes anyone.
+  it wasn't told about (`inbox_told`, per message and session). A returned wake, a hook's notice (UserPromptSubmit
+  context, a Stop block) or reading tells it; `claimWake` claims in one INSERT, so a message wakes each session at most
+  once, even after moving away and back, and two clients never both wake it. Untargeted mail never wakes anyone.
 - **Delivery.** `send_message` and `post` say how a recipient sees the mail: `push` (woken now, or holding
   `wait_for_message`), `turn` (busy with a client that wakes it, or it has hooks), `pull` (when it checks). Across
   principals `to` names the agent only.
@@ -106,7 +106,7 @@ one without failing the request, and never uses it for authorization.
 | Sessions are hints: a token touches only its own agent's sessions, and what a client sends picks one of them, checked for length and charset; a bad hint is dropped, never an error. A caller with no session is its whole agent, as before. | `Core.touchSession`, `Core.forAgent`, `UNIQUE (agent_id, key)` (migration 15) |
 | An agent's mail targets at most one of its sessions (address, reply routing, then online idle, then online busy, then none); a session reads mail for it plus untargeted mail; a caller with no session reads all of it. | `Core.append`, `Core.target`, `Core.unread`, `Core.takeInbox`, `AgentSession.guarded` (`routes`) |
 | Another principal's sessions are private: they can't be addressed (the same refusal whether one exists), `list_team` shows that side only as counts, and `delivery` names only the agent. | `AgentSession.sessionOf`, `AgentSession.listTeam`, `Core.delivery` |
-| A message wakes a session at most once; untargeted mail and busy sessions never; two clients never both. | `Core.claimWake`, `Core.tell`, `AgentSession.wakes`, `inbox.told` |
+| A message wakes a session at most once; untargeted mail and busy sessions never; two clients never both. | `Core.claimWake`, `Core.tell`, `AgentSession.wakes`, `inbox_told` |
 | Loop guard: 12 agent messages per sender and recipient, 60 per agent, in 10 minutes; humans, switchboard and the ops agent never count. | `Core.loopGuard`, called in `AgentSession.guarded` (rolled back with the write; audited) |
 
 ## Implementation files
@@ -114,7 +114,7 @@ one without failing the request, and never uses it for authorization.
 - `src/db.ts`: schema, migrations, query helpers, transactions. Migration 11: `principals.delegate_agent_id` (P4). Migration 12: `changes` rebuilt for `withdrawn`.
   Migration 13: `human_items` (P3). Migration 14: `asks` (P3); an agent's
   ask_human from before it that was never mirrored or answered becomes a pending ask, so it expires. Migration 15:
-  `sessions`, `routes`, `inbox.session` and `inbox.told`, `changes.session`, `asks.session`; existing mail stays untargeted.
+  `sessions`, `routes`, `inbox.session`, `inbox_told`, `changes.session`, `asks.session`; existing mail stays untargeted.
 - `src/core.ts`: everything above.
 
 ## Dependencies

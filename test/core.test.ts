@@ -706,7 +706,7 @@ describe('delegates (P4)', () => {
     assert.ok(after['mutes']!.every((m) => m['set_mark'] === 1), 'and marked at the newest event then');
     assert.deepEqual({ ...after, mutes: after['mutes']!.map(({ set_at: _, set_mark: __, ...m }) => m) },
       { ...before, principals: before['principals']!.map((p) => ({ ...p, delegate_agent_id: null })),
-        inbox: before['inbox']!.map((r) => ({ ...r, session: null, told: 0 })) }, 'nothing lost or changed; no delegate yet; mail untargeted (migration 15)');
+        inbox: before['inbox']!.map((r) => ({ ...r, session: null })) }, 'nothing lost or changed; no delegate yet; mail untargeted (migration 15)');
     const core = new Core(db);
     assert.equal(code(() => core.setDelegate('alice', 'alice/old')), 'conflict', 'a revoked agent can\'t be one');
     core.setDelegate('alice', 'alice/claude');
@@ -828,7 +828,7 @@ describe('sessions', () => {
     v14.close();
     const db = openDb(path);
     assert.equal((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 15);
-    assert.deepEqual(dump(db), { ...before, inbox: before['inbox']!.map((r) => ({ ...r, session: null, told: 0 })),
+    assert.deepEqual(dump(db), { ...before, inbox: before['inbox']!.map((r) => ({ ...r, session: null })),
       asks: before['asks']!.map((r) => ({ ...r, session: null })), changes: before['changes']!.map((r) => ({ ...r, session: null })) }, 'nothing lost or changed');
     assert.deepEqual({ ...db.prepare('SELECT COUNT(*) AS n FROM sessions').get() }, { n: 0 });
     const core = new Core(db, { now: () => new Date('2026-10-22T09:00:00.000Z') });
@@ -966,6 +966,24 @@ describe('addressing and delivery', () => {
     core.expireSessions();
     assert.deepEqual(where(), [null, null, null], 'nobody online: untargeted');
     assert.deepEqual(texts(at(3, { repo: 'three' }).readInbox()), ['for one', 'for the headless one', 'for two'], 'so any session reads it, a new one too');
+  });
+
+  test('a message wakes each session at most once, even when it moves away and back: S1, then S2, then S1 again', async () => {
+    const { core, s, clock, at } = team();
+    const one = at(1, { repo: 'one' }, { poll: true });
+    const sent = s.scout.sendMessage('builder', 'for one');
+    const where = () => (core.db.prepare("SELECT s.name FROM inbox i JOIN sessions s ON s.id = i.session WHERE i.thread_id = ? AND i.event_seq = ? AND i.recipient = 'agent:alice/builder'").get(sent.thread, sent.seq) as { name: string }).name;
+    assert.deepEqual(await one.wakes(0), { wake: [{ session: `claude:${sid(1)}`, unread: 1, steer: 0 }] }, 'S1 is woken');
+    clock.advance(11);
+    const two = at(2, { repo: 'two' }, { poll: true });
+    core.expireSessions();
+    assert.equal(where(), 'two');
+    assert.deepEqual(await two.wakes(0), { wake: [{ session: `claude:${sid(2)}`, unread: 1, steer: 0 }] }, 'S2 is woken');
+    clock.advance(11);
+    const back = at(1, { repo: 'one' }, { poll: true });
+    core.expireSessions();
+    assert.equal(where(), 'one', 'back to S1');
+    assert.deepEqual(await back.wakes(0), { wake: [] }, 'S1 was told already: no second wake for the same message');
   });
 
   test('send_message and post say where the mail went and how it is seen: push (woken now, or waiting for it), turn (busy, or hooks), pull (when it checks); across principals only the agent', async () => {
