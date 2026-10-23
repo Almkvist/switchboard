@@ -27,6 +27,7 @@ async function call(c: Client, name: string, args: Record<string, unknown> = {})
 }
 
 const dir = mkdtempSync(join(tmpdir(), 'switchboard-e2e-'));
+process.on('exit', () => rmSync(dir, { recursive: true, force: true })); // however the run ends, a failed start included
 const config = parseConfig({
   listen: { host: '127.0.0.1', port: 0 }, data_dir: join(dir, 'data'), slack: { ops_channel: SLACK.ops },
   resources: [{ id: 'api-gateway', name: 'API gateway', owners: ['alice', 'bob'], approvers: ['bob'], max_duration_minutes: 120,
@@ -233,5 +234,4 @@ try {
   process.exitCode = 1;
 } finally {
   await sb.stop();
-  rmSync(dir, { recursive: true, force: true });
 }

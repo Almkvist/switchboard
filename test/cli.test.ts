@@ -1,7 +1,8 @@
 // The admin CLI against a temp data dir.
 
 import assert from 'node:assert/strict';
-import { writeFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { readdirSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -252,6 +253,21 @@ test('admin usage: ops turns and API-credit spend this month, by engine', async 
   const out = (await run(cfg, 'usage')).out;
   assert.match(out, /claude-api: 2 turns, \$0\.75 of API credits/);
   assert.match(out, /codex: 1 turns/);
+});
+
+test('the e2e script removes its temp dir even when the service fails to start', async () => {
+  const tmp = tempDir('switchboard-'); // the script's TMPDIR, so what it leaves is easy to see
+  // Every listen fails, as a refused bind would.
+  const refuse = `data:text/javascript,${encodeURIComponent('import http from "node:http"; http.Server.prototype.listen = function () { process.nextTick(() => this.emit("error", Object.assign(new Error("listen EADDRINUSE"), { code: "EADDRINUSE" }))); return this; };')}`;
+  const { code, err } = await new Promise<{ code: number | null; err: string }>((done) => {
+    const child = spawn(process.execPath, ['--import', refuse, new URL('../scripts/e2e.ts', import.meta.url).pathname], { env: { ...process.env, TMPDIR: tmp } });
+    let e = '';
+    child.stderr.on('data', (c) => { e += c; });
+    child.on('close', (c) => done({ code: c, err: e }));
+  });
+  assert.notEqual(code, 0);
+  assert.match(err, /EADDRINUSE/);
+  assert.deepEqual(readdirSync(tmp), [], 'nothing left behind');
 });
 
 test('a start that fails halfway closes what it opened instead of hanging half-started', async () => {
