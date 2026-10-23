@@ -166,6 +166,7 @@ describe('mcp mode', () => {
     status('idle');
     const ccToken = 'T'.repeat(32);
     const c = mcp({ SWITCHBOARD_ENV_FILE: envFile(token), HOME: home, CLAUDE_CODE_SESSION_ID: sid(11), CLAUDE_CODE_MESSAGING_SOCKET: sock.path, CLAUDE_CODE_MESSAGING_TOKEN: ccToken });
+    c.initialize('claude-code');
     await until('the wake loop\'s first poll', () => !!session(`claude:${sid(11)}`)?.['polled_at']);
     const frames = (text: string) => `${JSON.stringify({ type: 'auth', token: ccToken })}\n${JSON.stringify({ type: 'user', message: { role: 'user', content: text } })}\n`;
 
@@ -184,6 +185,34 @@ describe('mcp mode', () => {
     assert.doesNotMatch(sock.got.join(''), /SECRET|K-2|builder|while it works/, 'only the counts, never a body or a sender');
     assert.ok(!c.stderr().includes(token));
     w.s.scout.readInbox();
+  });
+
+  test('a Codex run inside a Claude Code session, with its CLAUDE_CODE_* env, is Codex by its initialize: no session header, no socket frames, `codex queue`', async () => {
+    const token = w.core.issueToken('bob/analyst');
+    const sock = await fakeSocket();
+    const codex = fakeCodex();
+    const home = tmp();
+    mkdirSync(join(home, '.claude', 'sessions'), { recursive: true });
+    writeFileSync(join(home, '.claude', 'sessions', `${process.pid}.json`), JSON.stringify({ pid: process.pid, sessionId: sid(15), cwd: checkout(), name: 'Parent', status: 'idle', kind: 'interactive' }));
+    const inherited = { SWITCHBOARD_ENV_FILE: envFile(token), HOME: home, PATH: codex.path, CLAUDE_CODE_SESSION_ID: sid(15), CLAUDE_CODE_MESSAGING_SOCKET: sock.path, CLAUDE_CODE_MESSAGING_TOKEN: 'P'.repeat(32) };
+    const c = mcp(inherited);
+    c.initialize('codex-mcp-client');
+    await c.reply(0);
+    c.send({ id: 1, method: 'tools/call', params: { name: 'whoami', arguments: {}, _meta: { threadId: sid(16) } } });
+    assert.equal(JSON.parse((await c.reply(1))['result'].content[0].text).session, 'bob/analyst@webapp');
+    assert.equal(session(`claude:${sid(15)}`), undefined, 'the parent\'s Claude session never went out');
+    await until('the Codex wake poll for its thread', () => !!session(`codex:${sid(16)}`)?.['polled_at']);
+    w.s.helper.sendMessage('analyst', 'for the codex reviewer');
+    await until('codex queue', () => codex.runs().length > 0);
+    assert.deepEqual(codex.runs(), [['queue', '--thread', sid(16), '--message', NOTICE(1)]]);
+    await new Promise((r) => setTimeout(r, 300));
+    assert.deepEqual(sock.got, [], 'nothing on the parent Claude session\'s socket');
+
+    const other = mcp(inherited);
+    other.initialize('some-ide');
+    other.send({ id: 1, method: 'tools/call', params: { name: 'whoami', arguments: {} } });
+    assert.equal(JSON.parse((await other.reply(1))['result'].content[0].text).session, undefined, 'another client: forwarding only');
+    w.s.analyst.readInbox();
   });
 
   test('Codex: the thread named in _meta is woken with `codex queue`, argv exact and no shell; of two clients on one host only one queues it', async () => {

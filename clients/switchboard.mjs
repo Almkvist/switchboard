@@ -97,20 +97,23 @@ function request(url, method, headers, body, signal) {
 
 function serve() {
   const { url, token, problem } = credentials();
-  const claude = !!(process.env.CLAUDE_CODE_SESSION_ID || process.env.CLAUDE_CODE_MESSAGING_SOCKET || registry());
   const write = (msg) => process.stdout.write(`${JSON.stringify(msg)}\n`);
-  let codex = false;
+  // Who runs this client, by its MCP initialize, never by inherited env: a Codex started inside a Claude Code session has
+  // CLAUDE_CODE_* too. claude-code: Claude (its session header, socket wakes); codex-mcp-client: Codex; else forwarding only.
+  let kind = null;
+  let initialized = false;
   const forward = async (line) => {
     let msg;
     try { msg = JSON.parse(line); } catch { return write({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } }); }
-    // Codex says who it is when it connects: its sessions are woken with `codex queue`.
-    if (!claude && !codex && !problem && msg?.method === 'initialize' && msg.params?.clientInfo?.name === 'codex-mcp-client') {
-      codex = true;
-      void wakeLoop('codex', url, token);
+    if (msg?.method === 'initialize' && !initialized) {
+      initialized = true;
+      const name = msg.params?.clientInfo?.name;
+      kind = name === 'claude-code' ? 'claude' : name === 'codex-mcp-client' ? 'codex' : null;
+      if (!problem && (kind === 'codex' || (kind === 'claude' && process.env.CLAUDE_CODE_MESSAGING_SOCKET))) void wakeLoop(kind, url, token);
     }
     try {
       if (problem) throw new Error(problem);
-      const r = await request(`${url}/mcp`, 'POST', { ...headers(token, claude), 'content-type': 'application/json', accept: 'application/json, text/event-stream' }, line)
+      const r = await request(`${url}/mcp`, 'POST', { ...headers(token, kind === 'claude'), 'content-type': 'application/json', accept: 'application/json, text/event-stream' }, line)
         .catch((err) => { throw new Error(`switchboard unreachable: ${err.message}`); });
       if (r.status === 202 && !r.body) return; // a notification
       let reply;
@@ -122,7 +125,6 @@ function serve() {
     }
   };
   createInterface({ input: process.stdin }).on('line', (line) => { if (line.trim()) void forward(line); }).on('close', () => process.exit(0));
-  if (claude && process.env.CLAUDE_CODE_MESSAGING_SOCKET && !problem) void wakeLoop('claude', url, token);
 }
 
 /** Long-polls /wait and wakes each session it names. On errors, backs off from 5 s to 60 s. */
