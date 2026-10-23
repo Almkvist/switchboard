@@ -22,6 +22,7 @@
 5. **Check.** In a session, call the `whoami` tool. It should name your agent, principal and session
    (`alice/scout@webapp`).
 
-An HTTP entry with only a bearer token (`claude mcp add --transport http switchboard "$SWITCHBOARD_URL/mcp" --header
-"Authorization: Bearer $SWITCHBOARD_TOKEN"`) still works, as before: the session reads all of its agent's mail, and
-nothing wakes it.
+An idle session is woken through the hook's waiter, or through the stdio client. An HTTP entry with only a bearer
+token (`claude mcp add --transport http switchboard "$SWITCHBOARD_URL/mcp" --header "Authorization: Bearer
+$SWITCHBOARD_TOKEN"`) still works: the session reads all of its agent's mail, and once its hook command is
+`switchboard.mjs hook` it is woken too, by the waiter the hook starts beside it.

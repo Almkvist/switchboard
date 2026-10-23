@@ -3,7 +3,7 @@
 // Claude Code or Codex runs.
 
 import assert from 'node:assert/strict';
-import { type ChildProcessWithoutNullStreams, spawn, spawnSync } from 'node:child_process';
+import { type ChildProcessWithoutNullStreams, execFileSync, spawn, spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
@@ -25,11 +25,20 @@ const dirs: string[] = [];
 before(async () => { url = await listen(server, '127.0.0.1', 0); });
 after(() => {
   for (const c of children) c.kill();
+  for (const pid of waiters('')) process.kill(pid); // every waiter a hook here started
   server.closeAllConnections(); server.close();
   for (const d of dirs) rmSync(d, { recursive: true, force: true });
 });
 
 const tmp = () => { const d = mkdtempSync(join(tmpdir(), 'sb-client-')); dirs.push(d); return d; };
+/** The XDG_RUNTIME_DIR every client here gets, so waiters' locks and logs stay out of the real one and out of /tmp. */
+const runtime = tmp();
+/** This file's waiters (`switchboard.mjs wake …`, detached), by ps: those whose arguments end with `wake <tail>`. */
+function waiters(tail: string): number[] {
+  return execFileSync('ps', ['-eww', '-o', 'pid=,args='], { encoding: 'utf8' }).split('\n')
+    .filter((l) => l.includes(`${CLIENT} wake `) && (!tail || l.trimEnd().endsWith(`wake ${tail}`)))
+    .map((l) => Number(l.trim().split(/\s+/)[0]));
+}
 /** A KEY=value file with the credentials, as SWITCHBOARD_ENV_FILE names it. */
 const envFile = (token: string, at = url): string => { const f = join(tmp(), 'env'); writeFileSync(f, `# switchboard\nSWITCHBOARD_URL=${at}\nSWITCHBOARD_TOKEN="${token}"\n`); return f; };
 /** A checkout: <dir>/webapp with .git/HEAD on main; returns a directory inside it. */
@@ -42,7 +51,7 @@ const session = (key: string) => w.core.db.prepare('SELECT * FROM sessions WHERE
 function hook(input: Record<string, unknown>, env: Record<string, string>, ...args: string[]): Promise<Record<string, any>> {
   // spawnSync would block the event loop that serves /unread, so run it async.
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [CLIENT, 'hook', ...args], { env: { PATH: process.env['PATH'] ?? '', ...env } });
+    const child = spawn(process.execPath, [CLIENT, 'hook', ...args], { env: { PATH: process.env['PATH'] ?? '', HOME: runtime, XDG_RUNTIME_DIR: runtime, ...env } });
     let out = '';
     child.stdout.on('data', (c) => { out += c; });
     child.on('error', reject);
@@ -53,7 +62,7 @@ function hook(input: Record<string, unknown>, env: Record<string, string>, ...ar
 
 /** The client in mcp mode: send() writes a JSON-RPC line, reply(id) waits for the response with that id. */
 function mcp(env: Record<string, string>, cwd = checkout()) {
-  const child = spawn(process.execPath, [CLIENT, 'mcp'], { cwd, env: { PATH: process.env['PATH'] ?? '', ...env } });
+  const child = spawn(process.execPath, [CLIENT, 'mcp'], { cwd, env: { PATH: process.env['PATH'] ?? '', XDG_RUNTIME_DIR: runtime, ...env } });
   children.push(child);
   const lines: Array<Record<string, any>> = [];
   let buf = '';
@@ -77,20 +86,31 @@ async function fakeSocket(): Promise<{ path: string; got: string[] }> {
 }
 
 /** A fake `codex` first on PATH that records its argv, one JSON line per run. */
-function fakeCodex(): { path: string; runs: () => string[][] } {
+/**
+ * A fake `codex` first on PATH that records its argv, one JSON line per run. `holder` plays a Codex process: a shell
+ * script named codex (as a Codex binary is) that runs the switchboard hook with the JSON in $1, prints its answer, and
+ * stays alive as the hook's Codex.
+ */
+function fakeCodex(): { holder: string; path: string; runs: () => string[][] } {
   const dir = tmp();
   const log = join(dir, 'runs.log');
   writeFileSync(join(dir, 'codex'), `#!${process.execPath}\nrequire('node:fs').appendFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)) + '\\n');\nconsole.log('Queued message 1 for thread x.');\n`);
   chmodSync(join(dir, 'codex'), 0o755);
-  return { path: `${dir}:${process.env['PATH'] ?? ''}`, runs: () => (existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l) as string[]) : []) };
+  mkdirSync(join(dir, 'holder'));
+  const holder = join(dir, 'holder', 'codex');
+  writeFileSync(holder, `#!/bin/sh\n'${process.execPath}' '${CLIENT}' hook codex <<EOF\n$1\nEOF\nwhile :; do sleep 1; done\n`);
+  chmodSync(holder, 0o755);
+  return { holder, path: `${dir}:${process.env['PATH'] ?? ''}`, runs: () => (existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l) as string[]) : []) };
 }
 
 /** A fake switchboard, for answers the real one never gives: /unread and the first /wait answer `answers`; later waits hold. */
 async function fakeSwitchboard(answers: { unread?: unknown; wake?: unknown[] }) {
   let waits = 0;
+  const named: string[] = []; // each /wait's X-Switchboard-Threads
   const srv = http.createServer((req, res) => {
     const json = (v: unknown) => res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(v));
     if (req.url?.startsWith('/unread')) return json(answers.unread);
+    if (req.url?.startsWith('/wait')) named.push(String(req.headers['x-switchboard-threads'] ?? ''));
     if (req.url?.startsWith('/wait')) return ++waits === 1 ? json({ wake: answers.wake ?? [] }) : undefined;
     let body = '';
     req.on('data', (c) => { body += c; });
@@ -98,7 +118,7 @@ async function fakeSwitchboard(answers: { unread?: unknown; wake?: unknown[] }) 
   });
   const at = await listen(srv, '127.0.0.1', 0);
   after(() => { srv.closeAllConnections(); srv.close(); });
-  return { url: at, answers, waits: () => waits };
+  return { url: at, answers, named, waits: () => waits };
 }
 
 describe('hook mode', () => {
@@ -300,6 +320,86 @@ describe('mcp mode', () => {
   });
 });
 
+describe('hook waiter', () => {
+  /** A Claude Code session's registry file under `home`, for the session in process `pid`. */
+  const registryFor = (home: string, pid: number, sessionId: string) => {
+    mkdirSync(join(home, '.claude', 'sessions'), { recursive: true });
+    writeFileSync(join(home, '.claude', 'sessions', `${pid}.json`), JSON.stringify({ pid, sessionId, cwd: checkout(), name: 'Old config', status: 'idle', kind: 'interactive' }));
+  };
+  const lockOf = (name: string) => join(runtime, 'switchboard', `${name}.lock`);
+
+  test('a Claude hook starts one waiter beside its session, which posts the exact frames when switchboard returns a wake; a second hook starts none', async () => {
+    const fake = await fakeSwitchboard({ unread: { unread: 0, steer: 0, targeted: 0 }, wake: [{ session: `claude:${sid(70)}`, unread: 3, steer: 1 }] });
+    const sock = await fakeSocket();
+    const home = tmp();
+    registryFor(home, process.pid, sid(70)); // the hook's parent: this test, playing the Claude Code process
+    const env = { SWITCHBOARD_URL: fake.url, SWITCHBOARD_TOKEN: 'sb_test', HOME: home,
+      CLAUDE_CODE_SESSION_ID: sid(70), CLAUDE_CODE_MESSAGING_SOCKET: sock.path, CLAUDE_CODE_MESSAGING_TOKEN: 'W'.repeat(32) };
+    assert.deepEqual(await hook({ hook_event_name: 'UserPromptSubmit', session_id: sid(70), cwd: checkout() }, env), {}, 'the hook answers as before');
+    await until('the waiter\'s frames on the socket', () => sock.got.length === 1);
+    assert.equal(sock.got[0], `${JSON.stringify({ type: 'auth', token: 'W'.repeat(32) })}\n${JSON.stringify({ type: 'user', message: { role: 'user', content: NOTICE(3, 1) } })}\n`);
+    const one = waiters(`claude ${process.pid}`);
+    assert.equal(one.length, 1, 'one waiter');
+    assert.equal(readFileSync(lockOf(`claude-${process.pid}`), 'utf8'), String(one[0]), 'its lock holds its pid');
+    assert.deepEqual(await hook({ hook_event_name: 'Stop', session_id: sid(70), cwd: checkout() }, env), {});
+    await new Promise((r) => setTimeout(r, 300));
+    assert.deepEqual(waiters(`claude ${process.pid}`), one, 'a second hook starts none');
+    process.kill(one[0]!);
+    await until('the waiter to free its lock', () => !existsSync(lockOf(`claude-${process.pid}`)));
+  });
+
+  test('a waiter exits and frees its lock when its holder is gone, and leaves its log', async () => {
+    const fake = await fakeSwitchboard({});
+    const holder = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)']);
+    children.push(holder);
+    const home = tmp();
+    registryFor(home, holder.pid!, sid(73));
+    const waiter = spawn(process.execPath, [CLIENT, 'wake', 'claude', String(holder.pid)],
+      { env: { PATH: process.env['PATH'] ?? '', HOME: home, XDG_RUNTIME_DIR: runtime, SWITCHBOARD_URL: fake.url, SWITCHBOARD_TOKEN: 'sb_test', CLAUDE_CODE_MESSAGING_SOCKET: join(tmp(), 'cc.sock') } });
+    children.push(waiter);
+    const lock = lockOf(`claude-${holder.pid}`);
+    await until('the waiter\'s lock', () => existsSync(lock) && readFileSync(lock, 'utf8') === String(waiter.pid));
+    holder.kill();
+    await until('the waiter to exit', () => waiter.exitCode !== null, 10_000);
+    assert.equal(existsSync(lock), false, 'its lock is freed');
+    assert.match(readFileSync(lockOf(`claude-${holder.pid}`).replace(/\.lock$/, '.log'), 'utf8'), /gone/, 'its log says why');
+  });
+
+  test('a Codex hook starts a waiter for its thread, which names only that thread and wakes it with `codex queue`', async () => {
+    const thread = sid(71);
+    const fake = await fakeSwitchboard({ unread: { unread: 0, steer: 0, targeted: 0 }, wake: [{ session: `codex:${thread}`, unread: 1, steer: 0 }] });
+    const codex = fakeCodex();
+    const holder = spawn(codex.holder, [JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: thread, cwd: checkout() })],
+      { env: { PATH: codex.path, HOME: tmp(), XDG_RUNTIME_DIR: runtime, SWITCHBOARD_URL: fake.url, SWITCHBOARD_TOKEN: 'sb_test' } });
+    children.push(holder);
+    await until('codex queue for the thread', () => codex.runs().length > 0);
+    assert.deepEqual(codex.runs(), [['queue', '--thread', thread, '--message', NOTICE(1)]]);
+    assert.deepEqual([...new Set(fake.named)], [thread], 'every /wait of its names that thread alone');
+    const [waiter] = waiters(`codex ${thread} ${holder.pid}`);
+    assert.ok(waiter, 'its holder is the Codex that ran the hook');
+    holder.kill();
+    await until('the waiter to go with its Codex', () => waiters(`codex ${thread} ${holder.pid}`).length === 0, 10_000);
+  });
+
+  test('no waiter for a headless run (no registry) or a Codex thread that isn\'t a uuid', async () => {
+    const fake = await fakeSwitchboard({ unread: { unread: 0, steer: 0, targeted: 0 } });
+    const before = waiters('');
+    await hook({ hook_event_name: 'UserPromptSubmit', session_id: sid(72), cwd: checkout() },
+      { SWITCHBOARD_URL: fake.url, SWITCHBOARD_TOKEN: 'sb_test', HOME: tmp(), CLAUDE_CODE_SESSION_ID: sid(72), CLAUDE_CODE_MESSAGING_SOCKET: join(tmp(), 'cc.sock') });
+    const codex = fakeCodex();
+    const holder = spawn(codex.holder, [JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: 'not-a-uuid', cwd: checkout() })],
+      { env: { PATH: codex.path, HOME: tmp(), XDG_RUNTIME_DIR: runtime, SWITCHBOARD_URL: fake.url, SWITCHBOARD_TOKEN: 'sb_test' } });
+    children.push(holder);
+    let answered = '';
+    holder.stdout.on('data', (c) => { answered += c; });
+    await until('the Codex hook\'s answer', () => answered === '{}');
+    await new Promise((r) => setTimeout(r, 500));
+    assert.deepEqual(waiters(''), before, 'no waiter started');
+    assert.equal(existsSync(lockOf(`claude-${process.pid}`)), false);
+    holder.kill();
+  });
+});
+
 describe('kit configs', () => {
   test('the Claude Code and Codex configs run this client: their hook commands through a shell, and the MCP entry', async () => {
     const token = w.core.issueToken('alice/scout');
@@ -313,7 +413,7 @@ describe('kit configs', () => {
     assert.equal(commands.length, 4);
     for (const [i, command] of commands.entries()) {
       const out = await new Promise<string>((done) => {
-        const child = spawn('sh', ['-c', command], { env: { HOME: home, PATH: process.env['PATH'] ?? '' } });
+        const child = spawn('sh', ['-c', command], { env: { HOME: home, PATH: process.env['PATH'] ?? '', XDG_RUNTIME_DIR: runtime } });
         let o = '';
         child.stdout.on('data', (c) => { o += c; });
         child.on('close', () => done(o));

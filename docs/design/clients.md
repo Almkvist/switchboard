@@ -40,7 +40,21 @@ setup beyond this.
     `stop_hook_active`) and calls `GET /unread?session=<claude|codex>:<session_id>&event=…&cwd=…&repo=…&branch=…&host=…`
     (3 s timeout). `UserPromptSubmit` with unread mail → `hookSpecificOutput.additionalContext`; `Stop`, unless
     `stop_hook_active`, while mail for this session (`targeted`) or urgent mail waits → `{decision: "block", reason}`;
-    anything else → `{}`. It fails open.
+    anything else → `{}`. It fails open. With credentials set, it also starts the session's waiter (below) unless a live
+    one holds the lock: for Claude with `CLAUDE_CODE_MESSAGING_SOCKET`, the session's process is the nearest ancestor (up
+    to 4 levels, `/proc/<pid>/stat`, else `ps -o ppid=`) with `~/.claude/sessions/<pid>.json` (none: a headless
+    `claude -p`, no waiter); for Codex with a uuid `session_id`, the nearest ancestor whose executable or name starts
+    with `codex`. It spawns `switchboard.mjs wake …` detached with stdio ignored and never waits for it, so the hook's
+    answer and its 3 s fail-open don't change.
+  - `node switchboard.mjs wake claude <pid>` / `wake codex <thread> <codexPid>`, the waiter: the same wake loop as mcp mode
+    for that one session, so a session whose MCP config is still the old HTTP one is woken too. Claude reads the
+    registry of `<pid>`; Codex names only `<thread>` in `X-Switchboard-Threads`, and `codexBin` resolves from
+    `<codexPid>`. One per session: a lock file, `$XDG_RUNTIME_DIR/switchboard/<claude-<pid>|codex-<thread>>.lock`
+    (else `<tmp>/switchboard-<uid>/`, mode 0700), created with `wx`, holding the waiter's pid; a stale one (its pid
+    dead, or on Linux no longer a waiter's) is replaced. It ends, freeing the lock, when `<pid>` (or `<codexPid>`) is gone (checked every 3 s) or on
+    SIGTERM, and logs a few lines to a `.log` next to the lock, truncated at start. No server change: it is one more
+    client polling `/wait`, and wakes are claimed atomically, so a waiter and the mcp-mode loop never wake a session
+    twice. An idle session is woken through the hook's waiter, or through the stdio client.
 - `clients/claude-code/`: `README.md`, `mcp.json` (stdio: `node ${HOME}/.config/switchboard/switchboard.mjs mcp` with
   `SWITCHBOARD_ENV_FILE`), `settings-snippet.json` (both hooks run `switchboard.mjs hook`), `AGENTS-snippet.md`.
 - `clients/codex/`: `README.md`, `config-snippet.toml` (the same stdio entry, `default_tools_approval_mode = "approve"`),
@@ -62,12 +76,15 @@ HTTP MCP entry with only a bearer token, and the old hook that calls `GET /unrea
 and thread ids that aren't uuids, which run no `codex queue`): the hook, forwarding and its
 concurrency, an unreachable server, the exact frames on a fake messaging socket (and none while busy), `codex queue`'s
 argv from a fake `codex` first on `PATH` (only the client that named the thread), a Codex run inside a Claude Code
-session taken for Codex by its `initialize`, and the kits' hook commands and MCP entry.
+session taken for Codex by its `initialize`, the hook's waiter (one per session, the exact frames, `codex queue` for
+its thread, gone with its session's process, none for a headless run or a thread that isn't a uuid), and the kits'
+hook commands and MCP entry.
 
 ## Non-goals
 
-No client library or SDK. No waking a session that has no client polling `/wait` (an HTTP-only setup, a headless
-run): its mail waits for it, and after `idle_ping_minutes` switchboard pings its human (M2).
+No client library or SDK. No waking a session that nothing polls `/wait` for (a headless run, or an HTTP-only setup
+whose hook isn't `switchboard.mjs hook`): its mail waits for it, and after `idle_ping_minutes` switchboard pings its
+human (M2).
 
 ## Status
 

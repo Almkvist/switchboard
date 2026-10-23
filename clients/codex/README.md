@@ -25,5 +25,6 @@
    off, the snippet's "call read_inbox at checkpoints" is the fallback.
 5. **Check.** Ask Codex to call the switchboard `whoami` tool. It names your agent, principal and session.
 
-An HTTP entry (`url` and `bearer_token_env_var = "SWITCHBOARD_TOKEN"`) still works: switchboard learns the session from
-the thread id in each tool call, but nothing can wake it.
+An idle session is woken through the hook's waiter, or through the stdio client. An HTTP entry (`url` and
+`bearer_token_env_var = "SWITCHBOARD_TOKEN"`) still works: switchboard learns the session from the thread id in each
+tool call, and once its hook command is `switchboard.mjs hook codex` it is woken too, by the waiter the hook starts.

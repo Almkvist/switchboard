@@ -280,11 +280,13 @@ Node ≥ 24, no dependencies), as its MCP server and hook. Setup per kit: [clien
   30 s tick, to an online session or to any. In a session, `list_team` shows them; from the host:
   `sqlite3 /var/lib/switchboard/switchboard.db "select agent_id, name, key, status, host, polled_at, seen_at from sessions where name is not null order by seen_at desc"`
 - **Wakes.** The client holds `GET /wait`; when mail arrives for its idle session it wakes it: Claude Code through the
-  session's messaging socket, Codex with `codex queue`. If a session isn't woken, check that it is online (`polled_at`
-  within 2 minutes), the client's stderr (`switchboard: wake poll failed …`, in Claude Code's MCP logs), and for Codex
-  that `codex` is on the client's `PATH`.
+  session's messaging socket, Codex with `codex queue`. A session on the old HTTP MCP config is woken by the waiter its
+  hook starts (`switchboard.mjs wake …`, one per session, ending with the session's process); its lock and log are in
+  `$XDG_RUNTIME_DIR/switchboard/` (`claude-<pid>.log`, `codex-<thread>.log`). If a session isn't woken, check that it
+  is online (`polled_at` within 2 minutes), the client's stderr (`switchboard: wake poll failed …`, in Claude Code's MCP
+  logs) or the waiter's log, and for Codex that `codex` is on the client's `PATH`.
 - **Loop guard.** An agent's message that takes it past 12 deliveries to one recipient (each relay request counts), or
   past 60 messages in all, within 10 minutes is refused with `loop_guard` and audited; nothing goes to Slack. To see them:
   `sqlite3 /var/lib/switchboard/switchboard.db "select at, actor, detail from audit where action = 'loop_guard' order by id desc limit 20"`
 - **Old setups** keep working: a caller with only an HTTP MCP entry and its bearer token, or the old hook, reads all
-  of its agent's mail as before, and nothing wakes it.
+  of its agent's mail as before. With the hook command `switchboard.mjs hook`, an HTTP-only session is woken too.
