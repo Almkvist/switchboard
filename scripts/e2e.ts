@@ -213,6 +213,19 @@ try {
   assert.equal(primary.turns.length + failover.turns.length, turns, 'no ops turn for queued changes, approvals or the slot');
   log('P5 23:30: one summary for the slot, nothing else', summary[0]!.text);
 
+  // ---- Sessions: mail to an agent targets its online session, whose client's /wait wakes it ----
+  sb.core.addAgent('alice', 'builder');
+  const session = { Authorization: `Bearer ${sb.core.issueToken('alice/builder')}`, 'X-Switchboard-Session': 'claude:00000000-0000-4000-8000-0000000000e2',
+    'X-Switchboard-Presence': encodeURIComponent(JSON.stringify({ repo: 'webapp', branch: 'main', status: 'idle' })) };
+  const poll = (seconds: number) => fetch(`${sb.agentUrl}/wait?timeout_s=${seconds}`, { headers: session }).then((r) => r.json());
+  assert.deepEqual(await poll(1), { wake: [] });
+  const woken = poll(30);
+  const toBuilder = await call(scout, 'send_message', { to: 'builder', body: 'Is the migration on main?' });
+  assert.deepEqual(toBuilder.delivery, { to: 'alice/builder@webapp', tier: 'push' });
+  assert.deepEqual(await woken, { wake: [{ session: 'claude:00000000-0000-4000-8000-0000000000e2', unread: 1, steer: 0 }] });
+  assert.equal((await call(scout, 'list_team')).sessions[0].address, 'alice/builder@webapp');
+  log('Sessions: mail targets the online session and its /wait returns a wake at once; list_team shows it', JSON.stringify(toBuilder.delivery));
+
   await scout.close(); await helper.close();
   console.log('\nE2E PASSED');
 } catch (err) {

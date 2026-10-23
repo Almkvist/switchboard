@@ -263,3 +263,27 @@ that schedule once.
   edit stays as it was. Declined, done and expired windows are left alone. It rewrites only each card's root message,
   not copies the ops agent re-posted under it (`request_approval`); those keep their old text, and their buttons still
   work. Each run is one `audit` row (`rerender_cards`).
+
+## 13. Agents' clients and sessions
+
+Each agent's machine runs the switchboard client, [`clients/switchboard.mjs`](../clients/switchboard.mjs) (one file,
+Node ≥ 24, no dependencies), as its MCP server and hook. Setup per kit: [clients/claude-code/](../clients/claude-code/),
+[clients/codex/](../clients/codex/).
+
+- **Credentials.** The client reads `SWITCHBOARD_URL` and `SWITCHBOARD_TOKEN` from the environment, or from the file
+  `SWITCHBOARD_ENV_FILE` names (the kits use `~/.config/switchboard/env`, mode 0600), so no token sits in an MCP
+  config. After `sb issue-token`, update that file and restart the session: the MCP server reads it once, at start.
+- **Sessions.** Each Claude Code session and Codex thread on a token is a session, `<agent>@<repo>` (`-2`, `-3` on a
+  collision). Mail to an agent targets the session that last wrote in the thread, else its most recently active online
+  idle one. A session keeps its name 24 h after it was last seen (15 minutes if no client could ever wake it); a gone
+  session's unread mail moves on at the next 30 s tick. In a session, `list_team` shows them; from the host:
+  `sqlite3 /var/lib/switchboard/switchboard.db "select agent_id, name, key, status, host, polled_at, seen_at from sessions where name is not null order by seen_at desc"`
+- **Wakes.** The client holds `GET /wait`; when mail arrives for its idle session it wakes it: Claude Code through the
+  session's messaging socket, Codex with `codex queue`. If a session isn't woken, check that it is online (`polled_at`
+  within 2 minutes), the client's stderr (`switchboard: wake poll failed …`, in Claude Code's MCP logs), and for Codex
+  that `codex` is on the client's `PATH`.
+- **Loop guard.** An agent's message past 12 to one recipient, or past 60 in all, within 10 minutes is refused with
+  `loop_guard` and audited; nothing goes to Slack. To see them:
+  `sqlite3 /var/lib/switchboard/switchboard.db "select at, actor, detail from audit where action = 'loop_guard' order by id desc limit 20"`
+- **Old setups** keep working: a caller with only an HTTP MCP entry and its bearer token, or the old hook, reads all
+  of its agent's mail as before, and nothing wakes it.

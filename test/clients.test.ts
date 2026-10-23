@@ -290,3 +290,15 @@ test('the AGENTS snippets keep "a muted refusal is final" next to its follow-up;
     assert.match(snippet, /your replies in that thread reach it\s+for 24 hours after it last wrote to you with send_message/, kit);
   }
 });
+
+test('the AGENTS snippets teach sessions: list_team, the <agent>@<session> address, the delivery tiers, and that an idle session is woken', () => {
+  for (const kit of ['claude-code', 'codex']) {
+    const snippet = readFileSync(new URL(`../clients/${kit}/AGENTS-snippet.md`, import.meta.url), 'utf8');
+    assert.match(snippet, /^list_team\(\)\s+# /m, kit);
+    assert.match(snippet, /#\s+'alice\/scout@webapp': one session of your own principal's agents/, kit);
+    assert.match(snippet, /#\s+delivery\.tier: push \| turn \| pull/, kit);
+    assert.match(snippet, /- An idle session is woken when mail arrives for it/, kit);
+    assert.match(snippet, /loop_guard/, kit);
+    assert.doesNotMatch(snippet, /can't be woken/, `${kit}: the old line is gone`);
+  }
+});
