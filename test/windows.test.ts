@@ -8,12 +8,12 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { after, before, describe, test } from 'node:test';
 import { createAgentHttpServer } from '../src/agent-mcp.ts';
-import { Core, SwitchboardError } from '../src/core.ts';
+import { type ClientHints, Core, SwitchboardError } from '../src/core.ts';
 import { MIGRATIONS, openDb } from '../src/db.ts';
 import { listen } from '../src/main.ts';
 import { SlackBridge } from '../src/slack.ts';
 import { type Resource, Windows, titleFrom } from '../src/windows.ts';
-import { FakeSlack, RESOURCES, SLACK, buttonValue, call, mcpClient, world } from './fakes.ts';
+import { FakeSlack, RESOURCES, SLACK, buttonValue, call, hint, mcpClient, world } from './fakes.ts';
 
 
 function setup(maintenance?: { start: string; duration_minutes: number }) {
@@ -858,6 +858,29 @@ describe('queued changes (P5)', () => {
     assert.ok(!t.slack.posts.slice(posts).some((p) => p.text.includes('no longer covers')), 'agents only, never Slack');
   });
 
+  test('reply routing: an urgent window\'s decision and clock reach the session that requested it, a lost slot the session that queued the change', async () => {
+    const t = setup();
+    const as = (n: number, extra: ClientHints = { poll: true }) => t.core.forAgent(t.agents.scout, hint(n, { repo: `repo-${n}` }, extra));
+    const [one, two] = [as(1), as(2)];
+    t.clock.advance(1);
+    as(2, {}); // a request: two is the most recently active, so only reply routing sends anything to one
+    const w = t.windows.request(t.agents.scout, { resource: 'api-gateway', start: '2026-10-14T14:00:00Z', duration_minutes: 30, plan: 'p', rollback: 'r', verify: 'v' }, one.session!.id);
+    await t.press(w.window, SLACK.bob);
+    t.clock.t = Date.parse('2026-10-14T14:00:00Z');
+    as(1); as(2);
+    t.windows.tick();
+    assert.deepEqual(one.readInbox().map((i) => [i.type, i.body['state']]), [['window_decision', 'approved'], ['window_state', 'active']]);
+    assert.deepEqual(two.readInbox(), []);
+
+    await approve(t, 'bob');
+    const c = t.windows.queue(t.agents.scout, { resource: 'api-gateway', ...change }, one.session!.id);
+    t.clock.t = Date.parse('2026-10-14T21:10:00Z');
+    as(1); t.clock.advance(1); as(2);
+    await t.standing(1, 'bob', SLACK.bob, 'revoke');
+    assert.deepEqual(one.readInbox().map((i) => [i.type, i.body['change']]), [['slot_lost', c.change]]);
+    assert.deepEqual(two.readInbox(), []);
+  });
+
   test('a resource that left config, or a principal no longer among its owners, loses the slot\'s cover by change id too', async () => {
     const shared: Resource = { id: 'shared-box', name: 'Shared box', owners: ['alice', 'bob'], approvers: ['alice'], require: 'any', max_duration_minutes: 120 };
     const t = setup();
@@ -1211,7 +1234,7 @@ describe('migrations', () => {
     const stale = ['approval_decision', 'window_clock', 'window_report'];
     const after = dump(db);
     assert.ok(after['mutes']!.every((m) => typeof m['set_at'] === 'string' && m['set_at'] !== ''), 'P4: migration 11 dates every mute');
-    assert.deepEqual({ ...after, mutes: after['mutes']!.map(({ set_at: _, set_mark: __, ...m }) => m) }, { ...before, inbox: before['inbox']!.map((r) => (r['recipient'] === 'ops' && stale.includes(String(r['kind'])) ? { ...r, read_at: r['created_at'] } : r)),
+    assert.deepEqual({ ...after, mutes: after['mutes']!.map(({ set_at: _, set_mark: __, ...m }) => m) }, { ...before, inbox: before['inbox']!.map((r) => ({ ...(r['recipient'] === 'ops' && stale.includes(String(r['kind'])) ? { ...r, read_at: r['created_at'] } : r), session: null, told: 0 })), // migration 15: untargeted
       windows: before['windows']!.map((r) => ({ ...r, title: titleFrom(String(r['plan'])) })), // P2: migration 10 adds each window's title
       principals: before['principals']!.map((r) => ({ ...r, delegate_agent_id: null })) }, // P4: migration 11, no delegate yet
       'nothing lost or changed, except stale ops wake rows marked read, a title on each window and no delegate on each principal');
@@ -1284,7 +1307,8 @@ describe('migrations', () => {
     assert.equal((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, MIGRATIONS.length);
     const after = dump(db);
     assert.deepEqual(after, { ...before, windows: before['windows']!.map((r) => ({ ...r, title: titleFrom(String(r['plan'])) })),
-      principals: before['principals']!.map((r) => ({ ...r, delegate_agent_id: null })) }, 'nothing lost or changed; each window has a title, no principal a delegate (P4)');
+      principals: before['principals']!.map((r) => ({ ...r, delegate_agent_id: null })), changes: before['changes']!.map((r) => ({ ...r, session: null })) },
+      'nothing lost or changed; each window has a title, no principal a delegate (P4), no change a session (migration 15)');
     assert.deepEqual(after['windows']!.map((r) => r['title']), [
       'Raise API rate limits to 2x on web-prod-1',
       'Deploy frontend 1a2b3c (v2.1.3) to prod',
@@ -1333,7 +1357,7 @@ describe('migration 12', () => {
     v11.close();
     const db = openDb(path);
     assert.ok((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version >= 12);
-    assert.deepEqual(dump(db), before, 'every change, with its rowid (ties order by it)');
+    assert.deepEqual(dump(db), before.map((r) => ({ ...r, session: null })), 'every change, with its rowid (ties order by it), and no session (migration 15)');
     assert.equal((db.prepare("SELECT delegate_agent_id FROM principals").get() as { delegate_agent_id: string }).delegate_agent_id, 'alice/claude');
     assert.throws(() => db.prepare("UPDATE changes SET plan = 'x' WHERE id = 'c_000000000000'").run(), /fixed once queued/);
     assert.throws(() => db.prepare("UPDATE changes SET slot_day = '2026-10-22' WHERE id = 'c_000000000000'").run(), /only while it is queued/);
