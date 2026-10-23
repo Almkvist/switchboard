@@ -24,7 +24,7 @@ describe('agent MCP over HTTP', () => {
   test('exposes the Claude Code-style tool names', async () => {
     const c = await mcpClient(url, tokens.scout);
     const names = (await c.listTools()).tools.map((t) => t.name).sort();
-    assert.deepEqual(names, ['ask_human', 'list_agents', 'post', 'read_inbox', 'read_thread', 'send_message', 'wait_for_message', 'whoami']);
+    assert.deepEqual(names, ['ask_human', 'list_agents', 'list_team', 'post', 'read_inbox', 'read_thread', 'send_message', 'wait_for_message', 'whoami']);
     await c.close();
   });
 

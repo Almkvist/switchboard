@@ -145,7 +145,7 @@ export interface HumanItem {
   handled_at: string | null;
 }
 
-export type ErrorCode = 'not_found' | 'forbidden' | 'invalid' | 'conflict' | 'muted';
+export type ErrorCode = 'not_found' | 'forbidden' | 'invalid' | 'conflict' | 'muted' | 'loop_guard';
 // Messages go straight back to agents and humans, so they say what to do instead.
 export class SwitchboardError extends Error {
   code: ErrorCode;
@@ -175,6 +175,10 @@ const PRINTABLE = /^[^\u0000-\u001f\u007f]+$/;
 const DIR_NAME = /^[^\u0000-\u001f\u007f/\\]+$/;
 /** A client's hint if it is text of at most `max` characters matching `re`, else nothing: a bad hint never fails a request. */
 const hintOf = (v: unknown, max: number, re = PRINTABLE): string | null => (typeof v === 'string' && v.length <= max && re.test(v) ? v : null);
+// Loop guard: at most this many agent-written messages in the window from one sender to one recipient, and per sending agent.
+const LOOP_WINDOW_MS = 10 * 60_000;
+const LOOP_PAIR_MAX = 12;
+const LOOP_AGENT_MAX = 60;
 
 export const sha256 = (s: string): string => createHash('sha256').update(s).digest('hex');
 export const newId = (prefix: string): string => `${prefix}_${randomBytes(6).toString('hex')}`;
@@ -240,6 +244,8 @@ export class Core {
   private waiters = new Map<string, Set<() => void>>();
   /** Sessions holding wait_for_message now (how many calls each): online, idle, and handed their mail directly. */
   private holding = new Map<number, number>();
+  /** The loop guard's window: agents' own messages, newest last. In memory: a restart only forgets ten minutes of it. */
+  private sent: Array<{ at: number; agent: string; sender: string; to: string[] }> = [];
 
   constructor(db: Db, options: CoreOptions = {}) {
     this.db = db;
@@ -930,6 +936,8 @@ export class Core {
   private wakeable(s: Session): boolean { return (s.polled_at ?? '') >= new Date(this.now().getTime() - ONLINE_MS).toISOString(); }
   /** Busy, or waiting on its human, unless it holds wait_for_message (then it is waiting for mail). */
   busy(s: Session): boolean { return !this.holding.has(s.id) && (s.status === 'busy' || s.status === 'waiting'); }
+  /** What list_team shows: offline, busy, idle, waiting or unknown. */
+  statusOf(s: Session): string { return !this.online(s) ? 'offline' : this.holding.has(s.id) ? 'idle' : s.status ?? 'unknown'; }
 
   /** A session starts (+1) or ends (-1) a wait_for_message. */
   hold(sessionId: number, delta: 1 | -1): void {
@@ -999,6 +1007,23 @@ export class Core {
   /** Unread mail targeted at the session itself. */
   targeted(sessionId: number): number {
     return Number(one<{ n: number }>(this.db, 'SELECT COUNT(*) AS n FROM inbox WHERE session = ? AND read_at IS NULL', sessionId)!.n);
+  }
+
+  /**
+   * Loop guard: refuses an agent's message past 12 to one recipient from one sender (its session, else the agent), or past
+   * 60 from the agent, in 10 minutes. Called for agents' own messages only, inside their write, so a refusal rolls it
+   * back; what humans, switchboard and the ops agent write never counts.
+   */
+  loopGuard(agentId: string, sender: string, to: string[]): void {
+    const now = this.now().getTime();
+    this.sent = this.sent.filter((m) => m.at > now - LOOP_WINDOW_MS);
+    const flooded = this.sent.filter((m) => m.agent === agentId).length >= LOOP_AGENT_MAX;
+    const pair = to.find((r) => this.sent.filter((m) => m.sender === sender && m.to.includes(r)).length >= LOOP_PAIR_MAX);
+    if (flooded || pair) {
+      const who = pair === 'ops' ? 'the ops agent' : pair?.slice('agent:'.length);
+      throw new SwitchboardError('loop_guard', `refused: ${flooded ? 'you have sent' : `you and ${who} have exchanged`} many messages in the last few minutes, which looks like a loop. Check with your human before continuing.`);
+    }
+    this.sent.push({ at: now, agent: agentId, sender, to });
   }
 
   /** Agents with unread mail older than `minutes` that nobody has pinged their human about yet. */
@@ -1201,13 +1226,22 @@ export class AgentSession {
     return d ? { delivery: d } : {};
   }
 
-  /** An agent's own message (send_message, post, ask_human): written whole or not at all, its thread noted as this session's for replies (reply routing). */
+  /**
+   * An agent's own message (send_message, post, ask_human): written whole or not at all, its thread noted as this session's
+   * for replies (reply routing), and held to the loop guard. A refusal is audited after the rollback, so the row stays.
+   */
   private guarded<T extends { thread: string; seq: number }>(write: () => T): T {
-    return tx(this.core.db, () => {
-      const r = write();
-      if (this.session) this.core.noteRoute(r.thread, this.agent.id, this.session.id);
-      return r;
-    });
+    try {
+      return tx(this.core.db, () => {
+        const r = write();
+        if (this.session) this.core.noteRoute(r.thread, this.agent.id, this.session.id);
+        this.core.loopGuard(this.agent.id, this.session ? `${this.agent.id}@${this.session.id}` : this.agent.id, this.core.recipients(r.thread, r.seq));
+        return r;
+      });
+    } catch (err) {
+      if (err instanceof SwitchboardError && err.code === 'loop_guard') this.core.audit(this.actor, 'loop_guard', { session: this.address ?? null, refused: err.message });
+      throw err;
+    }
   }
 
   /**
@@ -1391,6 +1425,26 @@ export class AgentSession {
       if (wake.length || Date.now() >= end || signal?.aborted) return { wake };
       await this.core.waitFor(this.actor, end - Date.now(), signal);
     }
+  }
+
+  /**
+   * list_team: your own principal's current sessions in full, online first; other principals' agents (those list_agents
+   * shows) only as counts of online and idle sessions: their sessions are private to them.
+   */
+  listTeam() {
+    this.core.expireSessions();
+    const mine = this.agent.principal_id;
+    const current = this.core.sessions();
+    const online = (s: Session) => this.core.online(s);
+    return {
+      sessions: current.filter((s) => principalOf(agentActor(s.agent_id)) === mine)
+        .sort((a, b) => Number(online(b)) - Number(online(a)) || b.active_at.localeCompare(a.active_at))
+        .map((s) => ({ address: `${s.agent_id}@${s.name}`, agent: s.agent_id, status: this.core.statusOf(s), repo: s.repo && s.branch ? `${s.repo}@${s.branch}` : s.repo, title: s.title, last_seen: s.seen_at })),
+      agents: this.listAgents().filter((a) => a.principal !== mine).map((a) => {
+        const on = current.filter((s) => s.agent_id === a.id && online(s));
+        return { agent: a.id, sessions: on.length, idle: on.filter((s) => !this.core.busy(s)).length };
+      }),
+    };
   }
 
   readThread(threadId: string, afterSeq = 0, limit = 100) {

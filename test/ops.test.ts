@@ -560,7 +560,8 @@ describe('sessions', () => {
     const { thread } = scout.sendMessage('ops', 'kick-off: we coordinate the staging box here');
     await settle();
     scout.sendMessage('bob/helper', 'join', thread);
-    for (let i = 0; i < 600; i++) (i % 2 ? helper : scout).post(thread, `chatter ${i}`); // agent-to-agent: no wake
+    // Agent-to-agent chatter, which doesn't wake it, written as the core writes it: the loop guard would refuse 600 agent posts in ten minutes.
+    for (let i = 0; i < 600; i++) sb.core.postMessage(sb.core.thread(thread)!, (i % 2 ? helper : scout).actor, { text: `chatter ${i}` });
     const seen = sb.core.thread(thread)!.ops_seen_seq;
     scout.sendMessage('ops', 'WAKE-MARKER who has the box now?', thread);
     await settle();

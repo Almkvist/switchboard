@@ -250,6 +250,7 @@ describe('approval: only the Slack button handler, only an allowed Slack user', 
         { resource: 'api-gateway', start: '2026-10-14T14:00:00Z', duration_minutes: 30, plan: 'x', rollback: 'y', verify: 'z', urgent: true }],
       window_status: [{ id: win.window }, { resource: 'api-gateway' }],
       report_window: [{ id: win.window, outcome: 'done', evidence: 'it was approved' }],
+      list_team: [{}],
     };
     for (const token of [core.issueToken('alice/scout'), core.issueToken('bob/helper')]) {
       const c = await mcpClient(url, token);

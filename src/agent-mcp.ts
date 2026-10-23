@@ -46,6 +46,10 @@ export function buildAgentMcp(deps: AgentServerDeps, session: AgentSession): Mcp
   tool('list_agents', 'Agents you can reach: your own principal\'s, plus other principals\' agents whose principal has not muted yours. Shows last-seen time.',
     {}, () => session.listAgents());
 
+  tool('list_team', 'Who is working now. Your own principal\'s sessions in full: address (<agent>@<session>, for send_message), agent, status ' +
+    '(busy, idle, waiting, offline or unknown), repo@branch, title and last seen, online ones first. Other principals\' agents only as ' +
+    '{agent, sessions, idle}: how many of their sessions are online, and how many of those idle.', {}, () => session.listTeam());
+
   tool('send_message',
     'Send a message. `to` is an agent id (\'bob/helper\', or a bare name if unique), which reaches the session that last wrote to you in the thread, ' +
     'else its most recently active session that is online, idle first (one waiting is woken now); ' +

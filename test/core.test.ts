@@ -956,3 +956,74 @@ describe('addressing and delivery', () => {
     assert.deepEqual(s.scout.sendMessage('alice', 'j').delivery, { to: 'ops', tier: 'push' }, 'to a human: the ops agent');
   });
 });
+
+describe('loop guard', () => {
+  const refusal = (fn: () => unknown): string => { try { fn(); } catch (e) { return `${(e as SwitchboardError).code}: ${(e as Error).message}`; } return 'sent'; };
+  const audited = (core: Core) => core.db.prepare("SELECT actor, detail FROM audit WHERE action = 'loop_guard' ORDER BY id").all().map((r) => ({ ...r }));
+
+  test('the 13th message from one sender to one recipient within 10 minutes is refused with loop_guard and audited; another session counts on its own; later it passes', () => {
+    const { core, s, clock, agents } = world();
+    const { thread } = s.scout.sendMessage('builder', 'ping 1');
+    for (let i = 2; i <= 12; i++) s.scout.sendMessage('builder', `ping ${i}`);
+    assert.equal(refusal(() => s.scout.sendMessage('builder', 'ping 13')),
+      'loop_guard: refused: you and alice/builder have exchanged many messages in the last few minutes, which looks like a loop. Check with your human before continuing.');
+    assert.equal(refusal(() => s.scout.post(thread, 'a post counts too')).split(':')[0], 'loop_guard');
+    assert.equal(s.builder.readInbox(100).length, 12, 'the refused ones were not sent');
+    assert.equal(audited(core).length, 2);
+    assert.equal(audited(core)[0]!['actor'], 'agent:alice/scout');
+    assert.equal(s.scout.sendMessage('ops', 'another recipient').status, 'delivered');
+    assert.equal(core.forAgent(agents.scout, hint(1)).sendMessage('builder', 'another session of scout').status, 'delivered');
+    clock.advance(10);
+    assert.equal(s.scout.sendMessage('builder', 'ten minutes later').status, 'delivered');
+  });
+
+  test('an agent\'s 61st message in 10 minutes is refused, whichever session and recipient', () => {
+    const { core, agents } = world();
+    for (let n = 1; n <= 5; n++) for (let i = 0; i < 12; i++) core.forAgent(agents.scout, hint(n)).sendMessage('builder', `m${i}`);
+    assert.equal(refusal(() => core.forAgent(agents.scout, hint(6)).sendMessage('ops', 'one more')),
+      'loop_guard: refused: you have sent many messages in the last few minutes, which looks like a loop. Check with your human before continuing.');
+    assert.equal(core.forAgent(agents.builder).sendMessage('scout', 'another agent').status, 'delivered');
+  });
+
+  test('humans, switchboard and the ops agent never count and are never refused, so a loop with the ops agent ends on the agent\'s side', () => {
+    const { core, s } = world();
+    const { thread } = s.scout.sendMessage('ops', 'q 1');
+    const t = core.thread(thread)!;
+    core.join(thread, 'principal:alice');
+    for (let i = 0; i < 30; i++) {
+      core.postMessage(t, 'ops', { text: `ops ${i}` });
+      core.postMessage(t, 'principal:alice', { text: `alice ${i}` });
+      core.append(thread, 'system', 'notice', { text: `notice ${i}` }, [{ recipient: 'agent:alice/scout', priority: 'steer' }]);
+    }
+    for (let i = 2; i <= 12; i++) s.scout.sendMessage('ops', `q ${i}`);
+    assert.equal(refusal(() => s.scout.sendMessage('ops', 'q 13')),
+      'loop_guard: refused: you and the ops agent have exchanged many messages in the last few minutes, which looks like a loop. Check with your human before continuing.');
+    assert.equal(s.scout.readInbox(100).length, 90, 'all of theirs arrived');
+  });
+});
+
+describe('list_team', () => {
+  test('your principal\'s sessions in full, online ones first; other principals\' agents only as counts, never names, repos or titles', () => {
+    const { core, agents, clock, s } = world('open');
+    core.forAgent(agents.builder, hint(1, { cwd: '/w/api', repo: 'api', branch: 'main', title: 'Fix the login bug', status: 'idle' }, { poll: true }));
+    clock.advance(1);
+    core.forAgent(agents.scout, hint(2, { repo: 'docs', status: 'busy' }, { poll: true }));
+    core.forAgent(agents.scout, hint(3, { repo: 'old' })); // never polled: offline
+    core.forAgent(agents.builder, hint(4, { repo: 'tools' }, { poll: true })); // online, nothing said: unknown
+    core.forAgent(agents.helper, hint(5, { repo: 'secret-repo', title: 'Secret plan', status: 'idle' }, { poll: true }));
+    core.forAgent(agents.helper, hint(6, { repo: 'hidden', status: 'busy' }, { poll: true }));
+    const team = s.builder.listTeam();
+    assert.deepEqual(team, {
+      sessions: [
+        { address: 'alice/scout@docs', agent: 'alice/scout', status: 'busy', repo: 'docs', title: null, last_seen: '2026-10-14T12:01:00.000Z' },
+        { address: 'alice/builder@tools', agent: 'alice/builder', status: 'unknown', repo: 'tools', title: null, last_seen: '2026-10-14T12:01:00.000Z' },
+        { address: 'alice/builder@api', agent: 'alice/builder', status: 'idle', repo: 'api@main', title: 'Fix the login bug', last_seen: '2026-10-14T12:00:00.000Z' },
+        { address: 'alice/scout@old', agent: 'alice/scout', status: 'offline', repo: 'old', title: null, last_seen: '2026-10-14T12:01:00.000Z' },
+      ],
+      agents: [{ agent: 'bob/analyst', sessions: 0, idle: 0 }, { agent: 'bob/helper', sessions: 2, idle: 1 }],
+    });
+    assert.doesNotMatch(JSON.stringify(team), /secret|Secret|hidden/);
+    core.setMute('bob', 'alice', 'all');
+    assert.deepEqual(s.builder.listTeam().agents, [], 'whom list_agents hides, list_team hides');
+  });
+});
