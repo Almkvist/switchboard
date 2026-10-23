@@ -283,8 +283,8 @@ Node ≥ 24, no dependencies), as its MCP server and hook. Setup per kit: [clien
   session's messaging socket, Codex with `codex queue`. If a session isn't woken, check that it is online (`polled_at`
   within 2 minutes), the client's stderr (`switchboard: wake poll failed …`, in Claude Code's MCP logs), and for Codex
   that `codex` is on the client's `PATH`.
-- **Loop guard.** An agent's message past 12 to one recipient, or past 60 in all, within 10 minutes is refused with
-  `loop_guard` and audited; nothing goes to Slack. To see them:
+- **Loop guard.** An agent's message that takes it past 12 deliveries to one recipient (each relay request counts), or
+  past 60 messages in all, within 10 minutes is refused with `loop_guard` and audited; nothing goes to Slack. To see them:
   `sqlite3 /var/lib/switchboard/switchboard.db "select at, actor, detail from audit where action = 'loop_guard' order by id desc limit 20"`
 - **Old setups** keep working: a caller with only an HTTP MCP entry and its bearer token, or the old hook, reads all
   of its agent's mail as before, and nothing wakes it.

@@ -87,10 +87,10 @@ one without failing the request, and never uses it for authorization.
 - **Delivery.** `send_message` and `post` say how a recipient sees the mail: `push` (woken now, or holding
   `wait_for_message`), `turn` (busy with a client that wakes it, or it has hooks), `pull` (when it checks). Across
   principals `to` names the agent only.
-- **Loop guard.** An agent's message past 12 from one sender (its session, else the agent) to one recipient (`ops`
-  included), or past 60 from the agent, within 10 minutes is refused (`loop_guard`) and audited; the window is in
-  memory. A message reaches everyone its write delivered to: its own recipients, and the ops agent for a relay request
-  or a copy it made. Humans, switchboard and the ops agent never count.
+- **Loop guard.** An agent's message that takes one sender (its session, else the agent) past 12 deliveries to one
+  recipient (`ops` included), or the agent past 60 messages, within 10 minutes is refused (`loop_guard`) and audited;
+  the window is in memory. Every inbox row its write adds is a delivery: its own, and each relay request or copy it
+  made, so two relay requests to the ops agent count twice. Humans, switchboard and the ops agent never count.
 
 ## Rules it enforces
 
@@ -112,7 +112,7 @@ one without failing the request, and never uses it for authorization.
 | An agent's mail targets at most one of its sessions (address, reply routing, then online idle, then online busy, then none); a session reads mail for it plus untargeted mail; a caller with no session reads all of it. | `Core.append`, `Core.target`, `Core.unread`, `Core.takeInbox`, `AgentSession.guarded` (`routes`) |
 | Another principal's sessions are private: they can't be addressed (the same refusal whether one exists), `list_team` shows that side only as counts, and `delivery` names only the agent. | `AgentSession.sessionOf`, `AgentSession.listTeam`, `Core.delivery` |
 | A message wakes a session at most once; untargeted mail and busy sessions never; two clients never both. | `Core.claimWake`, `Core.tell`, `AgentSession.wakes`, `inbox_told` |
-| Loop guard: 12 agent messages per sender and recipient, 60 per agent, in 10 minutes; humans, switchboard and the ops agent never count. | `Core.loopGuard`, called in `AgentSession.guarded` (rolled back with the write; audited) |
+| Loop guard: 12 deliveries per sender and recipient, 60 messages per agent, in 10 minutes; humans, switchboard and the ops agent never count. | `Core.loopGuard`, called in `AgentSession.guarded` (rolled back with the write; audited) |
 
 ## Implementation files
 

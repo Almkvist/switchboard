@@ -995,9 +995,9 @@ export class Core {
   }
   /** The newest inbox row's id: the rows one write adds come after it. */
   lastInboxId(): number { return one<{ id: number | null }>(this.db, 'SELECT MAX(id) AS id FROM inbox')!.id ?? 0; }
-  /** Who got mail from the rows written after inbox row `id`: in a transaction, one write's message, relay requests and copies. */
+  /** The recipient of each row written after inbox row `id`: in a transaction, one write's deliveries (its message, relay requests and copies). */
   recipientsSince(id: number): string[] {
-    return all<{ recipient: string }>(this.db, 'SELECT DISTINCT recipient FROM inbox WHERE id > ?', id).map((r) => r.recipient);
+    return all<{ recipient: string }>(this.db, 'SELECT recipient FROM inbox WHERE id > ?', id).map((r) => r.recipient);
   }
   /**
    * Where an event's mail for `recipient` went and how it is seen: push (its session is woken now, or holds
@@ -1045,15 +1045,17 @@ export class Core {
   }
 
   /**
-   * Loop guard: refuses an agent's message past 12 to one recipient from one sender (its session, else the agent), or past
-   * 60 from the agent, in 10 minutes. Called for agents' own messages only, inside their write, so a refusal rolls it
-   * back; what humans, switchboard and the ops agent write never counts.
+   * Loop guard: refuses an agent's message that takes one sender (its session, else the agent) past 12 deliveries to one
+   * recipient, or the agent past 60 messages, in 10 minutes. `to`: the message's deliveries, one per inbox row, so two
+   * relay requests to the ops agent count twice. Called for agents' own messages only, inside their write, so a refusal
+   * rolls it back; what humans, switchboard and the ops agent write never counts.
    */
   loopGuard(agentId: string, sender: string, to: string[]): void {
     const now = this.now().getTime();
     this.sent = this.sent.filter((m) => m.at > now - LOOP_WINDOW_MS);
     const flooded = this.sent.filter((m) => m.agent === agentId).length >= LOOP_AGENT_MAX;
-    const pair = to.find((r) => this.sent.filter((m) => m.sender === sender && m.to.includes(r)).length >= LOOP_PAIR_MAX);
+    const times = (r: string, list: string[]) => list.filter((x) => x === r).length;
+    const pair = to.find((r) => this.sent.reduce((n, m) => n + (m.sender === sender ? times(r, m.to) : 0), times(r, to)) > LOOP_PAIR_MAX);
     if (flooded || pair) {
       const who = pair === 'ops' ? 'the ops agent' : pair?.slice('agent:'.length);
       throw new SwitchboardError('loop_guard', `refused: ${flooded ? 'you have sent' : `you and ${who} have exchanged`} many messages in the last few minutes, which looks like a loop. Check with your human before continuing.`);
