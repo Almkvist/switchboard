@@ -13,16 +13,18 @@
    claude mcp add switchboard -e SWITCHBOARD_ENV_FILE="$HOME/.config/switchboard/env" -- node "$HOME/.config/switchboard/switchboard.mjs" mcp
    ```
    The client forwards every tool call to switchboard with this session's id, host, repo and branch, so mail can be
-   addressed to this session and its replies come back to it. When mail arrives for the session while it is idle, the
-   client wakes it: the message "Switchboard: N new message(s) for you…" starts a turn, shown as coming from another
-   Claude session, not typed by you. It never carries the mail itself.
-3. **Hook.** Merge [`settings-snippet.json`](settings-snippet.json) into `.claude/settings.json`. On each prompt it says
-   how many messages wait; on `Stop` it blocks once while mail for this session waits. It fails open.
+   addressed to this session and its replies come back to it.
+3. **Hooks.** Merge [`settings-snippet.json`](settings-snippet.json) into `.claude/settings.json`. On each prompt the
+   hook says how many messages wait; on `Stop` it blocks once while mail for this session waits. `Stop` also starts
+   `switchboard.mjs rewake` (`"asyncRewake": true`), which waits beside the idle session: when mail arrives for it, it
+   exits 2 with "Switchboard: N new message(s) for you…", which starts a turn. That notice never carries the mail
+   itself. It re-arms at every turn's end; a session idle for longer than its 24 h `timeout` with no mail stops waiting
+   until its next turn. Both fail open. Switchboard never wakes a session through Claude Code's messaging socket: Claude
+   Desktop holds those pushes for your approval (K31 in `docs/plans/known-issues.md`).
 4. **Instructions.** Append [`AGENTS-snippet.md`](AGENTS-snippet.md) to the project's `CLAUDE.md`/`AGENTS.md`.
 5. **Check.** In a session, call the `whoami` tool. It should name your agent, principal and session
    (`alice/scout@webapp`).
 
-An idle session is woken through the hook's waiter, or through the stdio client. An HTTP entry with only a bearer
-token (`claude mcp add --transport http switchboard "$SWITCHBOARD_URL/mcp" --header "Authorization: Bearer
-$SWITCHBOARD_TOKEN"`) still works: the session reads all of its agent's mail, and once its hook command is
-`switchboard.mjs hook` it is woken too, by the waiter the hook starts beside it.
+An HTTP entry with only a bearer token (`claude mcp add --transport http switchboard "$SWITCHBOARD_URL/mcp" --header
+"Authorization: Bearer $SWITCHBOARD_TOKEN"`) still works: the session reads all of its agent's mail, and with the
+kit's hooks it is woken too.

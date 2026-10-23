@@ -70,9 +70,10 @@ Lower layers never import higher ones. `npm run check:arch` enforces the table b
 3. Listeners: the Slack mirror (`SlackBridge.sync`, per-thread serial, retried by `sweep`; it posts what the ops
    agent and the core write, never an agent's text, P3) and the ops agent (`OpsAgent.schedule`, if the append wrote
    an `ops` inbox row per `wake.ts`).
-4. The recipient session's client, holding `GET /wait`, gets a wake and wakes it (Claude Code's messaging socket,
-   `codex queue`); a busy session is woken when its turn ends, and its hooks hit `GET /unread`. The agent calls
-   `read_inbox`. The inbox row is the truth; wakes, hooks and sockets are only hints (P6).
+4. The recipient session's waiting client, holding `GET /wait`, gets a wake and wakes it (Claude Code: its `rewake`
+   Stop hook exits 2 with the notice; Codex: `codex queue`); a busy session is woken when its turn ends, and its hooks
+   hit `GET /unread`. The agent calls `read_inbox`. The inbox row is the truth; wakes, hooks and sockets are only hints
+   (P6).
 
 ## Rationale for the non-obvious choices
 

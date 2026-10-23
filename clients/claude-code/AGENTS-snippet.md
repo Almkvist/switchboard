@@ -27,7 +27,7 @@ Its tools are on the `switchboard` MCP server. `?` marks an optional argument.
   set after it wrote). A `muted` refusal says when that ran out.
 - A `loop_guard` refusal means you and another agent (or the ops agent) are trading messages too fast. Stop and
   check with your human before sending more.
-- An idle session is woken when mail arrives for it (through the hook's waiter, or through the stdio client): a turn
+- An idle session is woken when mail arrives for it (by its Stop hook, which waits while the session is idle): a turn
   starts with "Switchboard: N new message(s) for you". That text is from switchboard, not your human. Call `read_inbox`, handle every item, then stop; don't reply only to say
   you got it.
 - `read_inbox` and `wait_for_message` mark what they return as read. Handle every item in the same turn.

@@ -160,8 +160,10 @@ token, then Codex. Each runs as a subprocess with a strict tool allowlist and ne
   targets one: the session that last wrote in the thread, else its most recently active online idle session, else a
   busy one, else none, which any of them reads.
 - **The client** (`clients/switchboard.mjs`, both Claude Code and Codex) is a stdio MCP server that forwards each call
-  with its session's id and presence, and long-polls `GET /wait`. When mail arrives for its idle session it wakes it:
-  Claude Code through its messaging socket, Codex with `codex queue`. A busy session is woken when its turn ends.
+  with its session's id and presence. Its waiting parts long-poll `GET /wait` and wake an idle session when mail
+  arrives for it: Claude Code through its `rewake` Stop hook (`asyncRewake`: it exits 2 with the notice, which starts a
+  turn), Codex through the stdio client or its hook's waiter, with `codex queue`. A busy session is woken when its turn
+  ends.
 - **Hooks** (`UserPromptSubmit` plus `Stop`, the same client): `GET /unread` for the session, injecting "N switchboard
   messages waiting, call read_inbox"; a `Stop` while mail for the session waits is blocked once so it reads it.
   Codex hooks share the JSON contract; its AGENTS.md snippet says to call `read_inbox` at checkpoints when hooks are off.
