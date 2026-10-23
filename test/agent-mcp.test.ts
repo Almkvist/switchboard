@@ -228,6 +228,18 @@ describe('sessions and wake over HTTP', () => {
     w.s.builder.readInbox(100);
   });
 
+  test('a /wait whose client hangs up stops waiting and leaves no waiter behind', async () => {
+    const waiters = () => w.core['waiters'].get('agent:alice/builder')?.size ?? 0;
+    const until = async (ok: () => boolean) => { for (const end = Date.now() + 5000; !ok(); await new Promise((r) => setTimeout(r, 10))) if (Date.now() > end) throw new Error('timed out'); };
+    const before = waiters();
+    const hangUp = new AbortController();
+    const held = fetch(`${url}/wait?timeout_s=30`, { headers: headers(tokens.builder, 5), signal: hangUp.signal }).then(() => 'answered', () => 'hung up');
+    await until(() => waiters() === before + 1);
+    hangUp.abort();
+    assert.equal(await held, 'hung up');
+    await until(() => waiters() === before);
+  });
+
   test('GET /wait takes timeout_s from 1 to 55', async () => {
     for (const t of ['0', '56', 'x', '1.5']) assert.equal((await get(`/wait?timeout_s=${t}`, headers(tokens.builder, 4))).status, 400, t);
     assert.equal((await fetch(`${url}/wait`)).status, 401);
