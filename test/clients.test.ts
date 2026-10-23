@@ -4,7 +4,7 @@
 
 import assert from 'node:assert/strict';
 import { type ChildProcessWithoutNullStreams, spawn, spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -20,10 +20,15 @@ const w = world();
 const server = createAgentHttpServer({ core: w.core });
 let url = '';
 const children: ChildProcessWithoutNullStreams[] = [];
+const dirs: string[] = [];
 before(async () => { url = await listen(server, '127.0.0.1', 0); });
-after(() => { for (const c of children) c.kill(); server.closeAllConnections(); server.close(); });
+after(() => {
+  for (const c of children) c.kill();
+  server.closeAllConnections(); server.close();
+  for (const d of dirs) rmSync(d, { recursive: true, force: true });
+});
 
-const tmp = () => mkdtempSync(join(tmpdir(), 'sb-client-'));
+const tmp = () => { const d = mkdtempSync(join(tmpdir(), 'sb-client-')); dirs.push(d); return d; };
 /** A KEY=value file with the credentials, as SWITCHBOARD_ENV_FILE names it. */
 const envFile = (token: string, at = url): string => { const f = join(tmp(), 'env'); writeFileSync(f, `# switchboard\nSWITCHBOARD_URL=${at}\nSWITCHBOARD_TOKEN="${token}"\n`); return f; };
 /** A checkout: <dir>/webapp with .git/HEAD on main; returns a directory inside it. */
@@ -87,7 +92,7 @@ describe('hook mode', () => {
     const as = (event: string, extra: Record<string, unknown> = {}) => hook({ hook_event_name: event, session_id: sid(1), cwd, ...extra }, env);
     assert.deepEqual(await as('UserPromptSubmit'), {}, 'nothing waiting');
     const { name, branch, host, status, hooks } = session(`claude:${sid(1)}`)!;
-    assert.deepEqual({ name, branch, host, status, hooks }, { name: 'webapp', branch: 'main', host: hostname(), status: 'busy', hooks: 1 }, 'named after the checkout, its branch read from .git');
+    assert.deepEqual({ name, branch, host, status, hooks }, { name: 'webapp', branch: 'main', host: hostname().replace(/[^A-Za-z0-9._-]/g, '-'), status: 'busy', hooks: 1 }, 'named after the checkout, its branch read from .git');
 
     w.s.builder.sendMessage('alice/scout@webapp', 'a deferred note for this session');
     const prompt = await as('UserPromptSubmit');
