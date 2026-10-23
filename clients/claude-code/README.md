@@ -18,8 +18,8 @@
    hook says how many messages wait; on `Stop` it blocks once while mail for this session waits. `Stop` also starts
    `switchboard.mjs rewake` (`"asyncRewake": true`), which waits beside the idle session: when mail arrives for it, it
    exits 2 with "Switchboard: N new message(s) for you…", which starts a turn. That notice never carries the mail
-   itself. It re-arms at every turn's end; a session idle for longer than its 24 h `timeout` with no mail stops waiting
-   until its next turn. Both fail open. Switchboard never wakes a session through Claude Code's messaging socket: Claude
+   itself. It re-arms at every turn's end (the newest replaces the last one, so the 24 h `timeout` counts from the last
+   turn's end); a session idle for longer than that with no mail stops waiting until its next turn. Both fail open. Switchboard never wakes a session through Claude Code's messaging socket: Claude
    Desktop holds those pushes for your approval (K31 in `docs/plans/known-issues.md`).
 4. **Instructions.** Append [`AGENTS-snippet.md`](AGENTS-snippet.md) to the project's `CLAUDE.md`/`AGENTS.md`.
 5. **Check.** In a session, call the `whoami` tool. It should name your agent, principal and session

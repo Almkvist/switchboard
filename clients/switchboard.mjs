@@ -317,20 +317,30 @@ async function waiter(thread, codexPid) {
 /**
  * `rewake`, Claude Code's asyncRewake Stop hook, started again at every turn's end: waits beside the idle session, one per
  * Claude Code process (its registry's), and exits 2 with the notice on stderr when switchboard has a wake for the session,
- * which wakes it: its next turn starts with the notice as the hook's feedback. Everything else exits 0: a headless run
- * (no registry above it), another rewaker, its Claude Code process gone, SIGTERM (Claude Code's timeout, the session's
- * end), an error. Only a real wake exits 2.
+ * which wakes it: its next turn starts with the notice as the hook's feedback. The newest rewaker replaces an older one
+ * (SIGTERM, then its lock), so Claude Code's timeout runs from the last turn's end. Everything else exits 0: a headless
+ * run (no registry above it), being replaced, its Claude Code process gone, SIGTERM (Claude Code's timeout, the
+ * session's end), an error. Only a real wake exits 2, and once it is waking a SIGTERM no longer stops it.
  */
 async function rewake() {
   let release = null;
+  let waking = false;
   const end = (code, why) => { if (why) log(why); release?.(); process.exit(code); };
   process.on('uncaughtException', (err) => end(0, `failed: ${err.message}`));
   process.on('unhandledRejection', (err) => end(0, `failed: ${err?.message ?? err}`));
-  process.on('SIGTERM', () => end(0, 'stopped'));
+  process.on('SIGTERM', () => { if (!waking) end(0, 'stopped'); });
   let input = {};
   try { input = JSON.parse((await stdin()) || '{}'); } catch { /* no input */ }
   const pid = ancestor((p) => existsSync(registryPath(p)));
-  release = pid ? holdLock(`claude-${pid}`) : null;
+  if (!pid) return end(0);
+  // The newest rewaker wins: an older one (an earlier turn's) is stopped, so the timeout counts from this turn's end.
+  const held = () => holderOf(join(lockDir(), `claude-${pid}.lock`));
+  const older = held();
+  if (older && older !== process.pid) {
+    try { process.kill(older, 'SIGTERM'); } catch { /* gone already */ }
+    for (let i = 0; i < 30 && held(); i++) await sleep(100);
+  }
+  release = holdLock(`claude-${pid}`);
   if (!release) return end(0);
   setInterval(() => { if (!alive(pid)) end(0, `Claude Code process ${pid} is gone`); }, 3_000);
   if (typeof input.session_id === 'string' && UUID.test(input.session_id)) process.env.CLAUDE_CODE_SESSION_ID ??= input.session_id;
@@ -340,6 +350,7 @@ async function rewake() {
   await wakeLoop('claude', url, token, pid, (w) => {
     const own = `claude:${registry(pid)?.sessionId ?? process.env.CLAUDE_CODE_SESSION_ID}`;
     if (w?.session !== own) return log('a wake for another session, ignored');
+    waking = true;
     log(`waking ${own}`);
     release();
     process.exitCode = 2;

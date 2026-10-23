@@ -399,16 +399,17 @@ describe('rewake: Claude Code\'s asyncRewake Stop hook', () => {
     assert.deepEqual(await exited(run), { code: 0, stderr: '' });
   });
 
-  test('one rewaker per Claude process: a second exits 0 at once', async () => {
+  test('one rewaker per Claude process: the newest takes over and the older exits 0, so Claude Code\'s timeout runs from the last turn\'s end', async () => {
     const fake = await fakeSwitchboard({});
     const { home } = claude(sid(83));
     const first = rewake({ ...creds(fake), HOME: home }, { session_id: sid(83) });
-    await until('its lock', () => existsSync(lock));
+    await until('its lock', () => existsSync(lock) && readFileSync(lock, 'utf8') === String(first.child.pid));
     const second = rewake({ ...creds(fake), HOME: home }, { session_id: sid(83) });
-    assert.deepEqual(await exited(second), { code: 0, stderr: '' });
-    assert.equal(first.child.exitCode, null, 'the first still waits');
-    first.child.kill('SIGTERM');
-    await exited(first);
+    assert.deepEqual(await exited(first), { code: 0, stderr: '' });
+    await until('the newest holds the lock', () => existsSync(lock) && readFileSync(lock, 'utf8') === String(second.child.pid));
+    assert.equal(second.child.exitCode, null, 'the newest waits');
+    second.child.kill('SIGTERM');
+    await exited(second);
   });
 
   test('SIGTERM, Claude Code\'s timeout or the session\'s end, exits 0 and frees its lock', async () => {

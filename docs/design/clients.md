@@ -53,10 +53,11 @@ setup beyond this.
     `claude -p`, exit 0). It long-polls `/wait` with that session's header and presence, the status from that registry,
     and polls again at once when the status changes. A wake for its own current session writes the notice to stderr
     and exits 2, which starts a turn with the notice as the hook's feedback. Only a real wake exits 2: a wake for
-    another session is ignored, and a headless run, another rewaker, the Claude Code process gone (checked every 3 s),
-    SIGTERM (Claude Code's timeout, the session's end) and an error all exit 0. Claude Code starts it again at every
-    turn's end, so it re-arms itself; a session idle for more than its 24 h timeout with no mail stops waiting until its
-    next turn ends.
+    another session is ignored, and a headless run, being replaced, the Claude Code process gone (checked every 3 s),
+    SIGTERM (Claude Code's timeout, the session's end) and an error all exit 0; once it is waking, SIGTERM no longer
+    stops it. Claude Code starts it again at every turn's end, and the newest replaces an older one (SIGTERM, then the
+    lock), so the 24 h timeout counts from the last turn's end; a session idle longer than that with no mail stops
+    waiting until its next turn ends.
   - Waiters and rewakers hold a lock, one per session: `$XDG_RUNTIME_DIR/switchboard/<codex-<thread>|claude-<pid>>.lock`
     (else `<tmp>/switchboard-<uid>/`, mode 0700), created with `wx`, holding its pid; a stale one (its pid dead, or on
     Linux no longer a waiter's or rewaker's) is replaced. Each logs a few lines to a `.log` next to its lock, truncated
