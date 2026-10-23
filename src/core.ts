@@ -221,14 +221,18 @@ export function checkBody(body: unknown, what = 'body'): string {
   return body;
 }
 
-/** What a client says about its session (X-Switchboard-Presence, else a hook's params), each field checked; the rest is dropped. */
-function presenceOf(h: ClientHints): { cwd: string | null; repo: string | null; branch: string | null; status: SessionStatus | null; title: string | null } {
-  let p: unknown = {};
-  try { p = JSON.parse(decodeURIComponent(hintOf(h.presence, 4000) ?? '{}')); } catch { /* not percent-encoded JSON: ignored */ }
-  const v = (p !== null && typeof p === 'object' ? p : {}) as Record<string, unknown>;
+/**
+ * What a client says about its session (X-Switchboard-Presence, else a hook's params), each field checked; the rest is
+ * dropped. `reported`: the client sent a presence object, so a missing status means it no longer reads one.
+ */
+function presenceOf(h: ClientHints) {
+  let p: unknown = null;
+  try { p = JSON.parse(decodeURIComponent(hintOf(h.presence, 4000) ?? '')); } catch { /* not percent-encoded JSON: ignored */ }
+  const reported = p !== null && typeof p === 'object' && !Array.isArray(p);
+  const v = (reported ? p : {}) as Record<string, unknown>;
   const status = v['status'];
   return {
-    cwd: hintOf(v['cwd'] ?? h.cwd, 500), repo: hintOf(v['repo'] ?? h.repo, 100, DIR_NAME), branch: hintOf(v['branch'] ?? h.branch, 200),
+    reported, cwd: hintOf(v['cwd'] ?? h.cwd, 500), repo: hintOf(v['repo'] ?? h.repo, 100, DIR_NAME), branch: hintOf(v['branch'] ?? h.branch, 200),
     status: status === 'busy' || status === 'idle' || status === 'waiting' ? status : null, title: hintOf(v['title'], 200),
   };
 }
@@ -894,12 +898,14 @@ export class Core {
         name = base;
         for (let n = 2; taken.has(name); n++) name = `${base}-${n}`;
       }
-      // The client's registry beats hook events (UserPromptSubmit: busy, Stop: idle), which count otherwise.
-      const status = p.status ?? (hook && !s.by_client ? hook : s.status);
+      // The client's registry beats hook events (UserPromptSubmit: busy, Stop: idle), but only while the client reports a
+      // status: its presence without one ends that, its last word becomes unknown, and hooks count again.
+      const byClient = p.status ? 1 : p.reported ? 0 : s.by_client;
+      const status = p.status ?? (hook && !byClient ? hook : p.reported && s.by_client ? null : s.status);
       run(this.db, `UPDATE sessions SET name = ?, host = COALESCE(?, host), cwd = COALESCE(?, cwd), repo = COALESCE(?, repo), branch = COALESCE(?, branch),
-        title = COALESCE(?, title), status = ?, by_client = MAX(by_client, ?), hooks = MAX(hooks, ?), polled_at = CASE WHEN ? THEN ? ELSE polled_at END,
+        title = COALESCE(?, title), status = ?, by_client = ?, hooks = MAX(hooks, ?), polled_at = CASE WHEN ? THEN ? ELSE polled_at END,
         active_at = CASE WHEN ? THEN active_at ELSE ? END, seen_at = ? WHERE id = ?`,
-      name, hintOf(h.host, 100, HOST), p.cwd, p.repo, p.branch, p.title, status, p.status ? 1 : 0, hook ? 1 : 0, h.poll ? 1 : 0, now, h.poll ? 1 : 0, now, now, s.id);
+      name, hintOf(h.host, 100, HOST), p.cwd, p.repo, p.branch, p.title, status, byClient, hook ? 1 : 0, h.poll ? 1 : 0, now, h.poll ? 1 : 0, now, now, s.id);
       // A held /wait looks again: this session may be due a wake now.
       if (status !== s.status || s.name === null) afterCommit(this.db, () => this.notify(agentActor(agentId)));
       return this.sessionById(s.id)!;

@@ -791,6 +791,24 @@ describe('sessions', () => {
     assert.equal(status(codex), 'idle', 'Stop ends it');
   });
 
+  test('the registry\'s word holds only while the client reports it: presence without a status lets hooks count again, so a Stop makes the session idle and its mail wakes it', async () => {
+    const { core, s, agents } = world();
+    const key = `claude:${sid(1)}`;
+    const row = () => ({ ...core.db.prepare('SELECT status, by_client FROM sessions WHERE key = ?').get(key) });
+    core.forAgent(agents.scout, hint(1, { repo: 'one', status: 'busy' }, { poll: true }));
+    s.builder.sendMessage('scout', 'for you');
+    core.forAgent(agents.scout, { session: key, event: 'Stop' });
+    assert.deepEqual(row(), { status: 'busy', by_client: 1 }, 'while the client reports a status, its registry wins');
+    const poll = () => core.forAgent(agents.scout, hint(1, { repo: 'one' }, { poll: true })); // its registry file is gone: no status
+    poll();
+    assert.deepEqual(row(), { status: null, by_client: 0 }, 'no longer reported: unknown, and hooks count again');
+    core.forAgent(agents.scout, { session: key, event: 'UserPromptSubmit' });
+    assert.deepEqual(row(), { status: 'busy', by_client: 0 });
+    core.forAgent(agents.scout, { session: key, event: 'Stop' });
+    assert.deepEqual(row(), { status: 'idle', by_client: 0 });
+    assert.deepEqual(await poll().wakes(0), { wake: [{ session: key, unread: 1, steer: 0 }] }, 'and its mail wakes it');
+  });
+
   test('Codex\'s _meta.threadId names a codex session on the client\'s host; a session header wins over it', () => {
     const { core, agents } = world();
     const viaMeta = core.forAgent(agents.scout, { thread: sid(7), host: 'box-1', presence: encodeURIComponent(JSON.stringify({ repo: 'api' })) });
