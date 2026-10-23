@@ -131,7 +131,7 @@ function hintsOf(req: http.IncomingMessage, url: URL, extra: ClientHints = {}): 
   const header = (k: string) => { const v = req.headers[k]; return typeof v === 'string' ? v : null; };
   const q = (k: string) => url.searchParams.get(k);
   return { session: header('x-switchboard-session') ?? q('session'), host: header('x-switchboard-host') ?? q('host'), presence: header('x-switchboard-presence'),
-    cwd: q('cwd'), repo: q('repo'), branch: q('branch'), event: q('event'), ...extra };
+    threads: header('x-switchboard-threads'), cwd: q('cwd'), repo: q('repo'), branch: q('branch'), event: q('event'), ...extra };
 }
 
 /** The body, or null past 4 MB (the SDK's own limit). */

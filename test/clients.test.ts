@@ -215,7 +215,7 @@ describe('mcp mode', () => {
     w.s.analyst.readInbox();
   });
 
-  test('Codex: the thread named in _meta is woken with `codex queue`, argv exact and no shell; of two clients on one host only one queues it', async () => {
+  test('Codex: the thread named in _meta is woken with `codex queue`, argv exact and no shell; another client on the host, which never served it, doesn\'t', async () => {
     const token = w.core.issueToken('bob/helper');
     const codex = fakeCodex();
     const env = { SWITCHBOARD_ENV_FILE: envFile(token), HOME: tmp(), PATH: codex.path };

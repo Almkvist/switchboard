@@ -67,7 +67,8 @@ one without failing the request, and never uses it for authorization.
   15 minutes unseen. A gone session frees its name; the tick (`expireSessions`) retargets its unread mail.
 - **Status.** The client's report from Claude Code's registry wins; else hook events (UserPromptSubmit busy, Stop idle);
   else unknown. Busy means busy or waiting, unless it holds `wait_for_message`.
-- **Online.** Its client polled `/wait`, or it held `wait_for_message`, in the last 2 minutes (or holds one now).
+- **Online.** Its client polled `/wait` for it, or it held `wait_for_message`, in the last 2 minutes (or holds one now).
+  A Codex client's poll counts only for the threads it names (`reachable`).
 - **Target.** Each inbox row for an agent targets at most one session (`inbox.session`): the addressed one
   (`<agent>@<session>`, own principal only); else the session that last wrote in the thread (`routes`), asked
   (`asks.session`) or queued (`changes.session`), if online; else the most recently active online idle session; else

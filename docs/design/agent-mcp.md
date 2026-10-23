@@ -22,8 +22,9 @@ them for authorization): `X-Switchboard-Session` (`claude:<session id>`), `X-Swi
 (percent-encoded JSON: cwd, repo, branch, status, title), Codex's `_meta.threadId` (or
 `_meta["x-codex-turn-metadata"].thread_id`) on a tools/call, which names a `codex:<thread id>` session, and a hook's
 `/unread` params. Without any, a caller is its whole agent, exactly as before sessions. On `/wait`, a Claude client
-(session header) reaches only its own session; a Codex client (no session header) reaches its agent's codex sessions
-on its `X-Switchboard-Host`.
+(session header) reaches only its own session; a Codex client (no session header) reaches only the agent's codex
+sessions for the thread ids it names in `X-Switchboard-Threads` (those it forwarded tool calls for, at most 32), so a
+thread whose Codex has closed isn't kept online; ids of no session of the agent are ignored.
 
 Tools (`buildAgentMcp`): `whoami` (with the session's address `<agent>@<session>` when known), `list_agents`,
 `list_team` (your principal's sessions in full, online first; other principals' agents only as `{agent, sessions, idle}`),

@@ -929,6 +929,22 @@ describe('addressing and delivery', () => {
     assert.deepEqual(await two.wakes(0), { wake: [] }, 'and only one');
   });
 
+  test('a Codex session whose process closed stays offline while another thread polls on its host, so replies and its mail move on (25 hours)', async () => {
+    const { core, s, clock, agents } = team();
+    const meta = (n: number) => core.forAgent(agents.builder, { thread: sid(n), host: 'box-1', presence: encodeURIComponent(JSON.stringify({ repo: `repo-${n}` })) });
+    const [a] = [meta(1), meta(2)];
+    const poll = (...threads: number[]) => core.forAgent(agents.builder, { threads: threads.map(sid).join(','), host: 'box-1', poll: true }).wakes(0);
+    await poll(1, 2);
+    const asked = a.sendMessage('scout', 'can you check the gateway?'); // a's thread, so scout's reply comes back to a
+    s.scout.post(asked.thread, 'on it');
+    for (let h = 0; h < 25; h++) { clock.advance(60); await poll(2); } // a's Codex closed; b's client names only b
+    const reply = s.scout.post(asked.thread, 'done: the gateway is fine');
+    const key = (sent: { thread: string; seq: number }) => core.db.prepare("SELECT s.key FROM inbox i LEFT JOIN sessions s ON s.id = i.session WHERE i.thread_id = ? AND i.event_seq = ? AND i.recipient = 'agent:alice/builder'").get(sent.thread, sent.seq)!['key'];
+    assert.equal(key(reply), `codex:${sid(2)}`, 'a closed session gets no replies');
+    core.expireSessions();
+    assert.deepEqual(texts(core.forAgent(agents.builder, { thread: sid(2) }).readInbox()), ['on it', 'done: the gateway is fine'], 'and its mail moved on');
+  });
+
   test('send_message and post say where the mail went and how it is seen: push (woken now, or waiting for it), turn (busy, or hooks), pull (when it checks); across principals only the agent', async () => {
     const { core, s, clock, at } = team('open');
     at(1, { repo: 'one' }, { poll: true });

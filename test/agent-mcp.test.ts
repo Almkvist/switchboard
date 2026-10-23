@@ -193,16 +193,22 @@ describe('sessions and wake over HTTP', () => {
     w.s.builder.readInbox(100);
   });
 
-  test('GET /wait from a Codex client (no session header) reaches its agent\'s codex sessions on its own host, and only one of two clients there claims a wake', async () => {
+  test('GET /wait from a Codex client (no session header) reaches only the codex sessions it names in X-Switchboard-Threads, and only one of two clients claims a wake', async () => {
     await toolCall(headers(tokens.helper, null, { repo: 'api' }, 'box-9'), 'whoami', { threadId: sid(60) });
-    await toolCall(headers(tokens.helper, null, { repo: 'other' }, 'box-8'), 'whoami', { threadId: sid(61) });
-    const box9 = headers(tokens.helper, null, {}, 'box-9');
-    assert.deepEqual((await get('/wait?timeout_s=1', box9)).json, { wake: [] });
-    w.core.forAgent(w.agents.analyst).sendMessage('bob/helper@other', 'for the session on box-8');
-    const both = [get('/wait?timeout_s=2', box9), get('/wait?timeout_s=2', box9)];
-    w.s.scout.sendMessage('bob/helper', 'for codex');
-    const wakes = (await Promise.all(both)).map((r) => r.json.wake);
-    assert.deepEqual(wakes.flat(), [{ session: `codex:${sid(60)}`, unread: 1, steer: 0 }], 'one claim; box-8\'s mail isn\'t box-9\'s to wake');
+    await toolCall(headers(tokens.helper, null, { repo: 'closed' }, 'box-9'), 'whoami', { threadId: sid(61) }); // same host; its Codex has since closed
+    const polled = (n: number) => w.core.db.prepare('SELECT polled_at FROM sessions WHERE key = ?').get(`codex:${sid(n)}`)!['polled_at'];
+    // Its own thread, one that doesn't exist, another agent's (alice/builder's, from the test above), and junk: only the first counts.
+    const named = { ...headers(tokens.helper, null, {}, 'box-9'), 'X-Switchboard-Threads': [sid(60), sid(99), sid(50), 'not-a-thread'].join(',') };
+    assert.deepEqual((await get('/wait?timeout_s=1', named)).json, { wake: [] });
+    assert.equal(polled(61), null, 'the thread it doesn\'t name isn\'t marked online');
+    assert.equal(polled(50), null, 'nor another agent\'s');
+    const both = [get('/wait?timeout_s=2', named), get('/wait?timeout_s=2', named)];
+    const sent = w.s.scout.sendMessage('bob/helper', 'for codex');
+    assert.deepEqual((await Promise.all(both)).map((r) => r.json.wake).flat(), [{ session: `codex:${sid(60)}`, unread: 1, steer: 0 }], 'one claim, for the named thread');
+    assert.equal(w.core.db.prepare('SELECT s.key FROM inbox i JOIN sessions s ON s.id = i.session WHERE i.thread_id = ? AND i.event_seq = ?').get(sent.thread, sent.seq)!['key'], `codex:${sid(60)}`);
+    w.core.forAgent(w.agents.analyst).sendMessage('bob/helper@closed', 'for the closed thread');
+    assert.deepEqual((await get('/wait?timeout_s=1', named)).json, { wake: [] }, 'never woken by a client that doesn\'t name it');
+    assert.equal(polled(61), null);
     w.s.helper.readInbox(100);
   });
 

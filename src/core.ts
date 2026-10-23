@@ -90,6 +90,8 @@ export interface ClientHints {
   branch?: string | null;
   /** A hook's event: UserPromptSubmit (busy), Stop (idle). */
   event?: string | null;
+  /** A Codex client's X-Switchboard-Threads: the thread ids it forwarded tool calls for, comma-separated (its /wait reaches only those). */
+  threads?: string | null;
   /** A /wait poll: online, and a client can wake it. Not activity. */
   poll?: boolean;
 }
@@ -175,6 +177,9 @@ const PRINTABLE = /^[^\u0000-\u001f\u007f]+$/;
 const DIR_NAME = /^[^\u0000-\u001f\u007f/\\]+$/;
 /** A client's hint if it is text of at most `max` characters matching `re`, else nothing: a bad hint never fails a request. */
 const hintOf = (v: unknown, max: number, re = PRINTABLE): string | null => (typeof v === 'string' && v.length <= max && re.test(v) ? v : null);
+/** X-Switchboard-Threads: at most 32 thread ids, each checked; the rest is dropped. */
+const threadsOf = (v: unknown): string[] =>
+  hintOf(v, 4096)?.split(',').map((t) => t.trim()).filter((t) => THREAD_ID.test(t)).slice(0, 32).map((t) => t.toLowerCase()) ?? [];
 // Loop guard: at most this many agent-written messages in the window from one sender to one recipient, and per sending agent.
 const LOOP_WINDOW_MS = 10 * 60_000;
 const LOOP_PAIR_MAX = 12;
@@ -984,11 +989,13 @@ export class Core {
 
   /**
    * The sessions a /wait poll can wake, marked online and wakeable: the client's own session, or, for a Codex client (no
-   * session header), its agent's codex sessions on the client's host.
+   * session header), the agent's codex sessions for the threads it names (X-Switchboard-Threads: those it forwarded tool
+   * calls for), so a thread whose Codex has closed is never kept online. Ids of no session of this agent are ignored.
    */
-  reachable(agentId: string, sessionId: number | null, host: string | null): Session[] {
-    const ids = sessionId !== null ? [sessionId]
-      : host ? all<{ id: number }>(this.db, "SELECT id FROM sessions WHERE agent_id = ? AND key LIKE 'codex:%' AND host = ? AND name IS NOT NULL", agentId, host).map((r) => r.id) : [];
+  reachable(agentId: string, sessionId: number | null, threads: string[]): Session[] {
+    const ids = sessionId !== null ? [sessionId] : threads
+      .map((t) => one<{ id: number }>(this.db, 'SELECT id FROM sessions WHERE agent_id = ? AND key = ? AND name IS NOT NULL', agentId, `codex:${t}`)?.id)
+      .filter((id): id is number => id !== undefined);
     for (const id of ids) run(this.db, 'UPDATE sessions SET polled_at = ?, seen_at = ? WHERE id = ?', this.iso(), this.iso(), id);
     return ids.map((id) => this.sessionById(id)!);
   }
@@ -1063,7 +1070,7 @@ export class Core {
 
   /** What one agent may do; with hints, as the client session they name (touchSession), else as the whole agent. */
   forAgent(agent: Agent, hints?: ClientHints): AgentSession {
-    return new AgentSession(this, agent, hints ? this.touchSession(agent.id, hints) : null, hintOf(hints?.host, 100, HOST));
+    return new AgentSession(this, agent, hints ? this.touchSession(agent.id, hints) : null, threadsOf(hints?.threads));
   }
 
   /** Renders a thread as markdown (admin export, plan §12). */
@@ -1085,15 +1092,15 @@ export class AgentSession {
   readonly actor: string;
   /** The client session the request comes from (Core.touchSession), or null: then it acts for the whole agent, as before sessions. */
   readonly session: Session | null;
-  /** The client's host (X-Switchboard-Host): a Codex client's /wait reaches its agent's codex sessions there. */
-  readonly host: string | null;
+  /** The Codex threads the client names (X-Switchboard-Threads): a Codex client's /wait reaches only those. */
+  readonly threads: string[];
 
-  constructor(core: Core, agent: Agent, session: Session | null = null, host: string | null = null) {
+  constructor(core: Core, agent: Agent, session: Session | null = null, threads: string[] = []) {
     this.core = core;
     this.agent = agent;
     this.actor = agentActor(agent.id);
     this.session = session;
-    this.host = host;
+    this.threads = threads;
   }
 
   /** `<agent>@<session>`, when the session is known. */
@@ -1419,7 +1426,7 @@ export class AgentSession {
     const end = Date.now() + timeoutMs;
     for (;;) {
       this.requireLiveToken();
-      const wake = this.core.reachable(this.agent.id, this.session?.id ?? null, this.host)
+      const wake = this.core.reachable(this.agent.id, this.session?.id ?? null, this.threads)
         .filter((s) => this.core.claimWake(s))
         .map((s) => ({ session: s.key, ...this.core.unread(this.actor, s.id) }));
       if (wake.length || Date.now() >= end || signal?.aborted) return { wake };

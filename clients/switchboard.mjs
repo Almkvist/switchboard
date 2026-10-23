@@ -95,6 +95,11 @@ function request(url, method, headers, body, signal) {
 
 // ---- mcp mode ----
 
+/** The Codex threads this client forwarded tool calls for, newest first: its /wait names them, and only them. */
+const threads = [];
+/** The /wait in flight: aborted to poll again at once. */
+let poll = new AbortController();
+
 function serve() {
   const { url, token, problem } = credentials();
   const write = (msg) => process.stdout.write(`${JSON.stringify(msg)}\n`);
@@ -110,6 +115,15 @@ function serve() {
       const name = msg.params?.clientInfo?.name;
       kind = name === 'claude-code' ? 'claude' : name === 'codex-mcp-client' ? 'codex' : null;
       if (!problem && (kind === 'codex' || (kind === 'claude' && process.env.CLAUDE_CODE_MESSAGING_SOCKET))) void wakeLoop(kind, url, token);
+    }
+    // Codex names its thread in every tool call: the threads this client serves, which its /wait names (a closed one drops off).
+    const thread = msg?.method === 'tools/call' ? msg.params?._meta?.threadId : undefined;
+    if (typeof thread === 'string' && UUID.test(thread) && threads[0] !== thread) {
+      const known = threads.indexOf(thread);
+      if (known >= 0) threads.splice(known, 1);
+      threads.unshift(thread);
+      threads.length = Math.min(threads.length, 32);
+      if (known < 0) poll.abort();
     }
     try {
       if (problem) throw new Error(problem);
@@ -131,17 +145,18 @@ function serve() {
 async function wakeLoop(kind, url, token) {
   let backoff = 5_000;
   for (;;) {
-    const poll = new AbortController();
+    const current = poll = new AbortController();
     const seen = kind === 'claude' ? registry()?.status : undefined;
     // Claude: when the session's status changes, poll again at once, so switchboard knows when it goes idle.
-    const watch = kind === 'claude' ? setInterval(() => { if (registry()?.status !== seen) poll.abort(); }, 2_000) : undefined;
+    const watch = kind === 'claude' ? setInterval(() => { if (registry()?.status !== seen) current.abort(); }, 2_000) : undefined;
     try {
-      const r = await request(`${url}/wait?timeout_s=50`, 'GET', headers(token, kind === 'claude'), undefined, poll.signal);
+      const named = threads.length ? { 'x-switchboard-threads': threads.join(',') } : {};
+      const r = await request(`${url}/wait?timeout_s=50`, 'GET', { ...headers(token, kind === 'claude'), ...named }, undefined, current.signal);
       if (r.status !== 200) throw new Error(`HTTP ${r.status}`);
       for (const w of JSON.parse(r.body).wake ?? []) await wake(kind, w);
       backoff = 5_000;
     } catch (err) {
-      if (!poll.signal.aborted) {
+      if (!current.signal.aborted) {
         log(`wake poll failed (${err.message}); next try in ${backoff / 1000} s`);
         await sleep(backoff);
         backoff = Math.min(backoff * 2, 60_000);
