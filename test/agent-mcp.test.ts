@@ -228,6 +228,31 @@ describe('sessions and wake over HTTP', () => {
     w.s.builder.readInbox(100);
   });
 
+  test('GET /unread for PostToolUse names the thread a switchboard write went to, from a session whose MCP config sends none: it becomes the session\'s route; a thread it can\'t read sets nothing; the counts are as always and nothing is told', async () => {
+    const h = { Authorization: `Bearer ${tokens.builder}` };
+    const hook = (q: Record<string, string>) => get(`/unread?${new URLSearchParams({ session: `claude:${sid(8)}`, ...q })}`, h);
+    await hook({ event: 'Stop', cwd: '/w/routed' }); // the session, as its hooks make it on the old HTTP MCP config
+    const session = w.core.db.prepare(`SELECT id, name FROM sessions WHERE key = 'claude:${sid(8)}'`).get() as { id: number; name: string };
+    const mine = w.s.builder.sendMessage('helper', 'a write that names no session').thread;
+    assert.equal(w.core.route(mine, 'alice/builder'), undefined, 'the write itself noted no route');
+    const theirs = w.s.helper.sendMessage('analyst', 'bob\'s own').thread;
+    w.core.forAgent(w.agents.scout).sendMessage(`alice/builder@${session.name}`, 'targeted, not yet told');
+    const told = () => (w.core.db.prepare('SELECT COUNT(*) AS n FROM inbox_told WHERE session = ?').get(session.id) as { n: number }).n;
+    const counts = await hook({});
+    assert.deepEqual(await hook({ event: 'PostToolUse', thread: mine }), counts, 'the counts, as always');
+    assert.equal(w.core.route(mine, 'alice/builder'), session.id, 'the thread it wrote in is its route now');
+    for (const thread of [theirs, 't_000000000000', 'general', '']) assert.deepEqual(await hook({ event: 'PostToolUse', thread }), counts, `ignored: '${thread}'`);
+    assert.equal(w.core.route(theirs, 'alice/builder'), undefined, 'a thread it can\'t read sets nothing');
+    assert.equal(told(), 0, 'PostToolUse tells nothing');
+    w.s.builder.readInbox(100);
+    // Online (its rewaker polls /wait), the route beats a more recently active idle session: the reply goes to it.
+    await Promise.all([get('/wait?timeout_s=1', headers(tokens.builder, 8)), get('/wait?timeout_s=1', headers(tokens.builder, 9))]);
+    w.s.helper.post(mine, 'the reply');
+    const row = w.core.db.prepare("SELECT session FROM inbox WHERE recipient = 'agent:alice/builder' AND thread_id = ? ORDER BY id DESC LIMIT 1").get(mine) as { session: number | null };
+    assert.equal(row.session, session.id);
+    w.s.builder.readInbox(100);
+  });
+
   test('a /wait whose client hangs up stops waiting and leaves no waiter behind', async () => {
     const waiters = () => w.core['waiters'].get('agent:alice/builder')?.size ?? 0;
     const until = async (ok: () => boolean) => { for (const end = Date.now() + 5000; !ok(); await new Promise((r) => setTimeout(r, 10))) if (Date.now() > end) throw new Error('timed out'); };

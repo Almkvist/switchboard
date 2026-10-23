@@ -43,6 +43,14 @@ setup beyond this.
     `/proc/<pid>/stat`, else `ps -o ppid=`) whose executable or name starts with `codex`. It spawns
     `switchboard.mjs wake codex …` detached with stdio ignored and never waits for it, so the hook's answer and its 3 s
     fail-open don't change.
+    Claude Code's `PostToolUse` (the kit's matcher `mcp__switchboard__.*`) is for routes: a session whose MCP config
+    predates the stdio client names no session in its calls, so its writes note no reply route, and replies in its
+    threads go to whichever session is most recently active; hooks reload live, MCP config doesn't. After
+    `send_message`, `post` or `ask_human` (the writes that note a route for a stdio session; not reads, whose results
+    list other sessions' threads), unless the result is an error, it takes `tool_input.thread`, else the first `thread`
+    in `tool_response` (an object, content parts or a JSON string), and if that matches `^(t|w)_[a-z0-9]{6,40}$` calls
+    `/unread` as above with `event=PostToolUse&thread=<id>`. It answers `{}` always (it runs after every switchboard
+    call), and does nothing for any other tool or for Codex, whose session the server knows from `_meta`.
   - `node switchboard.mjs wake codex <thread> <codexPid>`, the Codex waiter: the same wake loop as mcp mode for that one
     thread, so a Codex whose MCP config is still the old HTTP one is woken too. It names only `<thread>` in
     `X-Switchboard-Threads`, and `codexBin` resolves from `<codexPid>`. It ends, freeing its lock, when `<codexPid>` is
@@ -71,20 +79,23 @@ setup beyond this.
     `node` found on the installing shell's `PATH` by that path (a stable link, not the versioned binary behind it), else
     the installer's own: an app started from a GUI may have no node on its `PATH`. Where
     `~/.claude/` exists: in `~/.claude/settings.json` (created if missing) every hook whose command contains
-    `switchboard` runs the sync hook (`… hook`), once per event, rewake entries aside; `UserPromptSubmit` and `Stop` have
-    it, and `Stop` has exactly one `rewake` entry (`"asyncRewake": true, "timeout": 86400`). Then, unless
+    `switchboard` runs the sync hook (`… hook`), once per event, rewake entries aside and each group's matcher kept;
+    `UserPromptSubmit` and `Stop` have it, `PostToolUse` too (added with the matcher `mcp__switchboard__.*` when none
+    there is switchboard's), and `Stop` has exactly one `rewake` entry (`"asyncRewake": true, "timeout": 86400`). Then, unless
     `~/.claude.json` already holds that user-scope entry, `claude mcp remove switchboard -s user` (its failure ignored)
     and `claude mcp add-json switchboard -s user '<stdio json>'`, by execFile with no shell; without `claude` on `PATH`
     it prints the command. Where `~/.codex/` exists: the `[mcp_servers.switchboard]` table and the tables under it in
     `config.toml` become the stdio entry where they stood (text-level, every other byte kept; switchboard as an inline
-    table or dotted keys is refused), and `hooks.json` gets the same merge with `hook codex` and no rewake. Other hooks
+    table or dotted keys is refused), and `hooks.json` gets the same merge with `hook codex`, no rewake and no
+    `PostToolUse`. Other hooks
     and settings stay. A file is written only when its content changes: first copied to
     `~/.config/switchboard/backup-<UTC time>/` (0600), then through a temp file renamed onto it (onto a symlink's
     target), mode 0600. A file it can't parse is left as is, and the run exits 1. It prints one line per change, where
     the backups are and when things take effect, or that nothing changed; never the token.
 - `clients/claude-code/`: `README.md`, `mcp.json` (stdio: `node ${HOME}/.config/switchboard/switchboard.mjs mcp` with
   `SWITCHBOARD_ENV_FILE`), `settings-snippet.json` (both hooks run `switchboard.mjs hook`; Stop also runs
-  `switchboard.mjs rewake` with `"asyncRewake": true, "timeout": 86400`), `AGENTS-snippet.md`.
+  `switchboard.mjs rewake` with `"asyncRewake": true, "timeout": 86400`; `PostToolUse` with the matcher
+  `mcp__switchboard__.*` runs `switchboard.mjs hook`), `AGENTS-snippet.md`.
 - `clients/codex/`: `README.md`, `config-snippet.toml` (the same stdio entry, `default_tools_approval_mode = "approve"`),
   `hooks.json` (`switchboard.mjs hook codex`: Codex hooks share Claude Code's JSON contract, with the thread id as
   `session_id`), `AGENTS-snippet.md`.
@@ -107,7 +118,9 @@ the thread), a Codex run inside a Claude Code session taken for Codex by its `in
 thread, `codex queue` for its thread, gone with its Codex, none for a thread that isn't a uuid), `rewake` (exit 2 with
 exactly the notice for its own session's wake, a wake for another ignored, one per Claude Code process, exit 0 when that
 process is gone and on SIGTERM with its lock freed, the registry's status sent and re-polled on a change, sanitized
-counts), mcp and hook modes never writing to a fake messaging socket, the kits' hook commands and MCP entry, and
+counts), mcp and hook modes never writing to a fake messaging socket, `PostToolUse` against a fake switchboard (the
+thread of `send_message` and `ask_human` from each form of their result, of `post` from its input; nothing for other
+tools, reads, errors, bad ids or Codex; `{}` always), the kits' hook commands and MCP entry, and
 `install` in a temp home whose path has a space and a quote (the exact merged JSON and TOML with the old token gone,
 the commands run through a shell against the server, backups, a second run that changes nothing, exit 1 without
 credentials, a fake `claude`'s argv, no world-readable file but the client, the command printed when `claude` is

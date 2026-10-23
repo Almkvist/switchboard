@@ -79,7 +79,10 @@ one without failing the request, and never uses it for authorization.
   presentation and answer, an urgent window's decision, clock and report, and a lost slot all follow it, and so do
   `tell_human`'s post about an item and the human's replies under it (to the session that wrote the item,
   `human_items.session`; a batch with items from several sessions of one agent routes to none, so any of them reads
-  it). A route can say none (`routes.session` NULL): that agent's mail in the thread stays untargeted.
+  it). A route can say none (`routes.session` NULL): that agent's mail in the thread stays untargeted. A session's own
+  writes note its routes; a Claude Code session whose MCP config predates the stdio client names no session in its
+  calls, so its `PostToolUse` hook reports the thread instead (`GET /unread?event=PostToolUse&thread=…`, a thread it can
+  read, else ignored; it tells nothing), which notes the same route.
 - **Wake.** A wake is due for a session that isn't busy, doesn't hold `wait_for_message`, and has unread targeted mail
   it wasn't told about (`inbox_told`, per message and session). A returned wake, a hook's notice (UserPromptSubmit
   context, a Stop block) or reading tells it; `claimWake` claims in one INSERT, so a message wakes each session at most
@@ -109,7 +112,7 @@ one without failing the request, and never uses it for authorization.
 | A session opened with a token gets no more mail once that token is revoked or rotated, even inside a held `wait_for_message`: revoke and issue wake its waiters, and the token is checked again before every tool and before the inbox is read. | `Core.issueToken`, `Core.revokeToken`, `AgentSession.requireLiveToken` (every agent tool, `agent-mcp.ts`), `AgentSession.readInbox` |
 | Events can't be updated or deleted; `window`/`incident` threads can't be private; `dm` threads can't be shared. | triggers and CHECKs in `db.ts` |
 | Sessions are hints: a token touches only its own agent's sessions, and what a client sends picks one of them, checked for length and charset; a bad hint is dropped, never an error. A caller with no session is its whole agent, as before. | `Core.touchSession`, `Core.forAgent`, `UNIQUE (agent_id, key)` (migration 15) |
-| An agent's mail targets at most one of its sessions (address, reply routing, then online idle, then online busy, then none); a session reads mail for it plus untargeted mail; a caller with no session reads all of it. | `Core.append`, `Core.target`, `Core.unread`, `Core.takeInbox`, `AgentSession.guarded` (`routes`) |
+| An agent's mail targets at most one of its sessions (address, reply routing, then online idle, then online busy, then none); a session reads mail for it plus untargeted mail; a caller with no session reads all of it. | `Core.append`, `Core.target`, `Core.unread`, `Core.takeInbox`, `AgentSession.guarded` (`routes`), `AgentSession.hookUnread` (PostToolUse's route) |
 | Another principal's sessions are private: they can't be addressed (the same refusal whether one exists), `list_team` shows that side only as counts, and `delivery` names only the agent. | `AgentSession.sessionOf`, `AgentSession.listTeam`, `Core.delivery` |
 | A message wakes a session at most once; untargeted mail and busy sessions never; two clients never both. | `Core.claimWake`, `Core.tell`, `AgentSession.wakes`, `inbox_told` |
 | Loop guard: 12 deliveries per sender and recipient, 60 messages per agent, in 10 minutes; humans, switchboard and the ops agent never count. | `Core.loopGuard`, called in `AgentSession.guarded` (rolled back with the write; audited) |

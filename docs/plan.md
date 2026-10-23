@@ -165,7 +165,9 @@ token, then Codex. Each runs as a subprocess with a strict tool allowlist and ne
   turn), Codex through the stdio client or its hook's waiter, with `codex queue`. A busy session is woken when its turn
   ends.
 - **Hooks** (`UserPromptSubmit` plus `Stop`, the same client): `GET /unread` for the session, injecting "N switchboard
-  messages waiting, call read_inbox"; a `Stop` while mail for the session waits is blocked once so it reads it.
+  messages waiting, call read_inbox"; a `Stop` while mail for the session waits is blocked once so it reads it. Claude
+  Code's `PostToolUse` after a switchboard write reports its thread, so a session whose MCP config predates the stdio
+  client gets reply routes too.
   Codex hooks share the JSON contract; its AGENTS.md snippet says to call `read_inbox` at checkpoints when hooks are off.
 - **Autonomous loops:** `wait_for_message`.
 - **A session nothing can wake** (an HTTP-only setup, a headless run) gets its mail when it checks. After X minutes

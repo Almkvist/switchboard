@@ -3,7 +3,8 @@
 //   node switchboard.mjs [mcp]         a stdio MCP server: forwards each JSON-RPC line to switchboard's /mcp; for Codex it
 //                                       also wakes the threads it serves when mail arrives for them (`codex queue`)
 //   node switchboard.mjs hook [codex]  the UserPromptSubmit and Stop hook: says what mail waits, blocks a Stop once while
-//                                       mail for this session waits; fails open. For Codex it also starts the thread's waiter
+//                                       mail for this session waits; fails open. For Codex it also starts the thread's waiter.
+//                                       Claude Code's PostToolUse: reports the thread a switchboard write went to, silently
 //   node switchboard.mjs wake codex <thread> <codexPid>
 //                                       the Codex waiter: the wake loop for one thread, beside a Codex whose MCP config is the
 //                                       old HTTP one; it ends with that Codex
@@ -369,6 +370,21 @@ async function rewake() {
 
 // ---- hook mode ----
 
+/** Switchboard's tools whose call notes its thread as the calling session's for replies (the core's guarded writes). */
+const WRITES = new Set(['send_message', 'post', 'ask_human']);
+
+/** The first thread a tool's result names: its `thread`, else "thread": "<id>" in its text (a JSON string, an object, content parts). */
+function threadIn(v, depth = 0) {
+  if (typeof v === 'string') return /"thread"\s*:\s*"([^"]*)"/.exec(v)?.[1] ?? null;
+  if (!v || typeof v !== 'object' || depth > 5) return null;
+  if (typeof v.thread === 'string') return v.thread;
+  for (const x of Array.isArray(v) ? v : Object.values(v)) {
+    const t = threadIn(x, depth + 1);
+    if (t !== null) return t;
+  }
+  return null;
+}
+
 const stdin = () => new Promise((done) => {
   let data = '';
   const timer = setTimeout(() => done(data), 1000);
@@ -381,12 +397,23 @@ async function hook(kind) {
   try { input = JSON.parse((await stdin()) || '{}'); } catch { /* no input */ }
   const event = input.hook_event_name;
   if (event === 'Stop' && input.stop_hook_active) return {}; // blocks once
+  // PostToolUse (Claude Code, after a switchboard tool): a write's thread is this session's for replies. The stdio client
+  // says so in the call itself; a session whose MCP config predates it (hooks reload live, MCP config doesn't) only here.
+  // Silent: it runs after every switchboard call. Reads aren't reported: an inbox lists other sessions' threads.
+  let route = null;
+  if (event === 'PostToolUse') {
+    const tool = typeof input.tool_name === 'string' && input.tool_name.startsWith('mcp__switchboard__') ? input.tool_name.slice('mcp__switchboard__'.length) : '';
+    if (kind !== 'claude' || !WRITES.has(tool) || input.tool_response?.isError === true) return {};
+    route = typeof input.tool_input?.thread === 'string' ? input.tool_input.thread : threadIn(input.tool_response);
+    if (!/^(t|w)_[a-z0-9]{6,40}$/.test(route ?? '')) return {};
+  }
   const { url, token } = credentials();
   if (!url || !token) return {};
   if (kind === 'codex') try { startWaiter(input.session_id); } catch (err) { log(`no waiter: ${err.message}`); } // never the hook's answer
   const q = new URLSearchParams({ host: host() });
   if (typeof input.session_id === 'string' && input.session_id) q.set('session', `${kind}:${input.session_id}`);
   if (typeof event === 'string') q.set('event', event);
+  if (route) q.set('thread', route);
   if (typeof input.cwd === 'string') {
     const { repo, branch } = checkoutOf(input.cwd);
     q.set('cwd', input.cwd);
@@ -394,7 +421,7 @@ async function hook(kind) {
     if (branch) q.set('branch', branch);
   }
   const res = await fetch(`${url}/unread?${q}`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(3000) });
-  if (!res.ok) return {};
+  if (!res.ok || route) return {};
   const body = await res.json();
   const [unread, steer, targeted] = [count(body?.unread), count(body?.steer), count(body?.targeted)];
   const urgent = steer ? `, ${steer} urgent` : '';
@@ -417,8 +444,9 @@ const shellWord = (s) => `'${s.replaceAll("'", `'\\''`)}'`;
 
 /**
  * Claude Code's settings.json or Codex's hooks.json (`doc`) with switchboard's hooks: every hook whose command contains
- * `switchboard` runs `sync` (one per event), UserPromptSubmit and Stop have it, and Stop has exactly one `rewake` entry
- * (none when `rewake` is null; Codex has no asyncRewake). Every other hook and setting stays as it is.
+ * `switchboard` runs `sync` (one per event, its group's matcher kept), UserPromptSubmit and Stop have it, and Stop has
+ * exactly one `rewake` entry. Claude Code's PostToolUse has it too, for switchboard's tools. Codex (`rewake` null) gets no
+ * rewake and no PostToolUse. Every other hook and setting stays as it is.
  */
 function withHooks(doc, sync, rewake) {
   const out = structuredClone(doc);
@@ -444,10 +472,11 @@ function withHooks(doc, sync, rewake) {
     });
   }
   const has = (event, test) => (out.hooks[event] ?? []).some((g) => Array.isArray(g?.hooks) && g.hooks.some(test));
-  for (const event of ['UserPromptSubmit', 'Stop']) {
+  const required = { UserPromptSubmit: null, Stop: null, ...(rewake ? { PostToolUse: 'mcp__switchboard__.*' } : {}) }; // event: matcher
+  for (const [event, matcher] of Object.entries(required)) {
     const missing = has(event, (h) => ours(h) && !isRewake(h)) ? [] : [{ type: 'command', command: sync, timeout: 5 }];
     if (event === 'Stop' && rewake && !has(event, isRewake)) missing.push(entry);
-    if (missing.length) out.hooks[event] = [...(out.hooks[event] ?? []), { hooks: missing }];
+    if (missing.length) out.hooks[event] = [...(out.hooks[event] ?? []), { ...(matcher ? { matcher } : {}), hooks: missing }];
   }
   return out;
 }

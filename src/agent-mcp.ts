@@ -180,7 +180,8 @@ async function handle(deps: AgentServerDeps, req: http.IncomingMessage, res: htt
   if (path === '/unread' && req.method === 'GET') {
     // The old hook names no session: it gets its agent's counts, exactly as before sessions.
     const hints = hintsOf(req, url);
-    return json(res, 200, hints.session ? deps.core.forAgent(agent, hints).hookUnread(hints.event ?? null) : deps.core.unread(agentActor(agent.id)));
+    return json(res, 200, hints.session ? deps.core.forAgent(agent, hints).hookUnread(hints.event ?? null, url.searchParams.get('thread'))
+      : deps.core.unread(agentActor(agent.id)));
   }
   if (path === '/wait' && req.method === 'GET') {
     const seconds = Number(url.searchParams.get('timeout_s') ?? 50);

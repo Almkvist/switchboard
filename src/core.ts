@@ -176,6 +176,8 @@ const HEADLESS_MS = 15 * 60_000;
 const CLOSED_MS = 10 * 60_000;
 const SESSION_KEY = /^(claude|codex):[0-9a-f-]{8,64}$/i;
 const THREAD_ID = /^[0-9a-f-]{8,64}$/i;
+/** A switchboard thread's id as a hook names it: newId's form, t_… or w_…. */
+const ROUTE_THREAD = /^[tw]_[a-z0-9]{6,40}$/;
 const HOST = /^[A-Za-z0-9._-]+$/;
 const PRINTABLE = /^[^\u0000-\u001f\u007f]+$/;
 const DIR_NAME = /^[^\u0000-\u001f\u007f/\\]+$/;
@@ -1440,10 +1442,17 @@ export class AgentSession {
   /**
    * GET /unread, for a hook. With a session: its counts, plus `targeted` (mail for it alone, which blocks its Stop), and the
    * notice the hook then shows (UserPromptSubmit's context, a Stop block) tells the session, so no wake repeats it.
+   * PostToolUse with a `thread` (Claude Code's, after a switchboard write) notes that thread as the session's route, as a
+   * stdio client's own write does: a session whose MCP config predates the stdio client names no session in its calls,
+   * so it gets no routes otherwise. A thread it can't read, or any other value, is ignored, and PostToolUse tells nothing.
    * Without one: the agent's counts, exactly as before sessions.
    */
-  hookUnread(event: string | null): { unread: number; steer: number; targeted?: number } {
+  hookUnread(event: string | null, thread: string | null = null): { unread: number; steer: number; targeted?: number } {
     if (!this.session) return this.core.unread(this.actor);
+    if (event === 'PostToolUse' && thread && ROUTE_THREAD.test(thread)) {
+      const t = this.core.thread(thread);
+      if (t && this.canRead(t)) this.core.noteRoute(t.id, this.agent.id, this.session.id);
+    }
     const counts = this.counts();
     const targeted = this.core.targeted(this.session.id);
     if ((event === 'UserPromptSubmit' && counts.unread > 0) || (event === 'Stop' && (targeted > 0 || counts.steer > 0))) this.core.tell(this.session.id);

@@ -107,16 +107,17 @@ function fakeCodex(): { holder: string; path: string; runs: () => string[][] } {
 
 /**
  * A fake switchboard, for answers the real one never gives. /unread answers `unread`; the n-th /wait answers `waits[n]`
- * (a wake list, or null to hold it), or the first one `wake`; later waits hold. It records each /wait's
- * X-Switchboard-Threads and its presence's status.
+ * (a wake list, or null to hold it), or the first one `wake`; later waits hold. It records each /unread's params, and
+ * each /wait's X-Switchboard-Threads and its presence's status.
  */
 async function fakeSwitchboard(answers: { unread?: unknown; wake?: unknown[]; waits?: Array<unknown[] | null> }) {
   let waits = 0;
   const named: string[] = [];
   const statuses: unknown[] = [];
+  const unreads: URLSearchParams[] = [];
   const srv = http.createServer((req, res) => {
     const json = (v: unknown) => res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(v));
-    if (req.url?.startsWith('/unread')) return json(answers.unread);
+    if (req.url?.startsWith('/unread')) { unreads.push(new URL(req.url, 'http://x').searchParams); return json(answers.unread); }
     if (req.url?.startsWith('/wait')) {
       named.push(String(req.headers['x-switchboard-threads'] ?? ''));
       statuses.push((JSON.parse(decodeURIComponent(String(req.headers['x-switchboard-presence'] ?? '%7B%7D'))) as { status?: unknown }).status);
@@ -129,7 +130,7 @@ async function fakeSwitchboard(answers: { unread?: unknown; wake?: unknown[]; wa
   });
   const at = await listen(srv, '127.0.0.1', 0);
   after(() => { srv.closeAllConnections(); srv.close(); });
-  return { url: at, answers, named, statuses, waits: () => waits };
+  return { url: at, answers, named, statuses, unreads, waits: () => waits };
 }
 
 /** `switchboard.mjs rewake`, as Claude Code runs its asyncRewake Stop hook: the hook's input on stdin; its exit code and stderr. */
@@ -184,6 +185,40 @@ describe('hook mode', () => {
       fake.answers.unread = odd;
       assert.deepEqual([await as('UserPromptSubmit'), await as('Stop')], [{}, {}], JSON.stringify(odd));
     }
+  });
+});
+
+describe('hook mode: PostToolUse', () => {
+  test('after a switchboard write it reports the thread, from tool_input or any form of tool_response, and says nothing; other tools, reads, errors and bad ids send nothing', async () => {
+    const fake = await fakeSwitchboard({ unread: { unread: 3, steer: 1, targeted: 2 } });
+    const env = { SWITCHBOARD_URL: fake.url, SWITCHBOARD_TOKEN: 'sb_test' };
+    const after = (tool_name: string, tool_input: unknown, tool_response: unknown, kind?: string) =>
+      hook({ hook_event_name: 'PostToolUse', session_id: sid(95), cwd: checkout(), tool_name, tool_input, tool_response }, env, ...(kind ? [kind] : []));
+    const result = (v: unknown) => ({ content: [{ type: 'text', text: JSON.stringify({ ...(v as object), inbox: { unread: 1, steer: 0 } }, null, 2) }] });
+    const sent = { status: 'sent', to: 'bob/helper', thread: 't_0a1b2c3d4e5f', seq: 1 };
+    const outputs = [
+      await after('mcp__switchboard__send_message', { to: 'bob/helper', body: 'hi' }, result(sent)),
+      await after('mcp__switchboard__send_message', { to: 'bob/helper', body: 'hi' }, result(sent).content),
+      await after('mcp__switchboard__send_message', { to: 'bob/helper', body: 'hi' }, result(sent).content[0]!.text),
+      await after('mcp__switchboard__ask_human', { who: 'alice', question: 'ok?' }, { ...sent, thread: 't_9f8e7d6c5b4a' }),
+      await after('mcp__switchboard__post', { thread: 'w_00aa11bb22cc', body: 'done' }, result({ thread: 't_0a1b2c3d4e5f', seq: 4 })),
+      await after('Bash', { command: 'echo' }, '"thread": "t_0a1b2c3d4e5f"'),
+      await after('mcp__switchboard__read_inbox', {}, result({ messages: [{ thread: 't_0a1b2c3d4e5f' }] })),
+      await after('mcp__switchboard__read_thread', { thread: 't_0a1b2c3d4e5f' }, result({ events: [] })),
+      await after('mcp__switchboard__post', { thread: 'general', body: 'x' }, result({ thread: 'general' })),
+      await after('mcp__switchboard__send_message', { to: 'bob/helper', body: 'hi' }, result({ thread: 'T_UPPER_CASE' })),
+      await after('mcp__switchboard__send_message', { to: 'bob/helper', body: 'hi' }, { ...result(sent), isError: true }),
+      await after('mcp__switchboard__send_message', { to: 'bob/helper', body: 'hi' }, 12),
+      await after('mcp__switchboard__post', { thread: 't_0a1b2c3d4e5f', body: 'x' }, result(sent), 'codex'),
+    ];
+    assert.deepEqual(outputs, outputs.map(() => ({})), 'always silent: it runs after every switchboard call');
+    assert.deepEqual(fake.unreads.map((q) => [q.get('event'), q.get('thread'), q.get('session')]), [
+      ['PostToolUse', 't_0a1b2c3d4e5f', `claude:${sid(95)}`],
+      ['PostToolUse', 't_0a1b2c3d4e5f', `claude:${sid(95)}`],
+      ['PostToolUse', 't_0a1b2c3d4e5f', `claude:${sid(95)}`],
+      ['PostToolUse', 't_9f8e7d6c5b4a', `claude:${sid(95)}`],
+      ['PostToolUse', 'w_00aa11bb22cc', `claude:${sid(95)}`],
+    ], 'send_message and ask_human from their result, post from its input; nothing for another tool, a read, a bad id, an error, or Codex');
   });
 });
 
@@ -489,7 +524,9 @@ describe('kit configs', () => {
     const rewakes = entries.filter((e) => e.command.endsWith(' rewake'));
     assert.deepEqual(rewakes.map((e) => [e.asyncRewake, e.timeout]), [[true, 86400]], 'Claude Code\'s Stop also runs the asyncRewake waiter');
     const commands = entries.filter((e) => !rewakes.includes(e)).map((e) => e.command);
-    assert.equal(commands.length, 4);
+    assert.equal(commands.length, 5);
+    assert.deepEqual((kit('claude-code/settings-snippet.json').hooks.PostToolUse as Array<{ matcher: string; hooks: Array<{ command: string }> }>)
+      .map((g) => [g.matcher, g.hooks.map((h) => h.command.endsWith(' hook'))]), [['mcp__switchboard__.*', [true]]], 'Claude Code\'s PostToolUse runs the hook after switchboard\'s tools');
     const code = await new Promise<number | null>((done) => {
       const child = spawn('sh', ['-c', rewakes[0]!.command], { env: { HOME: home, PATH: process.env['PATH'] ?? '', XDG_RUNTIME_DIR: runtime } });
       child.on('close', done);
@@ -584,6 +621,10 @@ fs.writeFileSync(file, JSON.stringify({ ...doc, mcpServers: servers }), { mode: 
     permissions: { allow: ['Bash(git status)'], deny: ['Read(./.env)'] },
     hooks: {
       PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'echo pre-bash', timeout: 3 }] }],
+      PostToolUse: [
+        { matcher: 'mcp__switchboard__send_message|mcp__switchboard__post', hooks: [{ type: 'command', command: 'node /opt/switchboard/hook.mjs', timeout: 7 }] },
+        { matcher: 'Edit', hooks: [{ type: 'command', command: 'echo edited' }] },
+      ],
       UserPromptSubmit: [{ hooks: [{ type: 'command', command: `curl -s -H 'Authorization: Bearer ${OLD}' http://switchboard.example.ts.net:7420/unread`, timeout: 10 }] }],
       Stop: [
         { hooks: [{ type: 'command', command: 'notify-send done' }, { type: 'command', command: 'node /opt/switchboard/hook.mjs' }, { type: 'command', command: 'node /opt/switchboard/hook.mjs' }] },
@@ -655,13 +696,17 @@ model = "gpt-5-mini"
       ...SETTINGS,
       hooks: {
         PreToolUse: SETTINGS.hooks.PreToolUse,
+        PostToolUse: [
+          { matcher: 'mcp__switchboard__send_message|mcp__switchboard__post', hooks: [{ type: 'command', command: p.sync, timeout: 7 }] },
+          SETTINGS.hooks.PostToolUse[1],
+        ],
         UserPromptSubmit: [{ hooks: [{ type: 'command', command: p.sync, timeout: 10 }] }],
         Stop: [
           { hooks: [{ type: 'command', command: 'notify-send done' }, { type: 'command', command: p.sync }] },
           { hooks: [{ type: 'command', command: p.rewake, asyncRewake: true, timeout: 86400 }, { type: 'command', command: 'echo stop-2' }] },
         ],
       },
-    }, 'switchboard hooks run the sync hook, once per event; Stop has exactly one rewake (the first, even without asyncRewake, made whole); every other hook and setting kept');
+    }, 'switchboard hooks run the sync hook, once per event (PostToolUse\'s replaced in place, its matcher kept); Stop has exactly one rewake (the first, even without asyncRewake, made whole); every other hook and setting kept');
     assert.ok(lstatSync(join(home, '.codex', 'hooks.json')).isSymbolicLink(), 'a symlinked config stays a symlink');
     assert.deepEqual(json('.codex/hooks.json'), { hooks: {
       SessionStart: CODEX_HOOKS.hooks.SessionStart,

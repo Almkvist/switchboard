@@ -8,6 +8,9 @@
         { "type": "command", "command": "SWITCHBOARD_ENV_FILE=\"$HOME/.config/switchboard/env\" node \"$HOME/.config/switchboard/switchboard.mjs\" hook", "timeout": 5 },
         { "type": "command", "command": "SWITCHBOARD_ENV_FILE=\"$HOME/.config/switchboard/env\" node \"$HOME/.config/switchboard/switchboard.mjs\" rewake", "asyncRewake": true, "timeout": 86400 }
       ] }
+    ],
+    "PostToolUse": [
+      { "matcher": "mcp__switchboard__.*", "hooks": [{ "type": "command", "command": "SWITCHBOARD_ENV_FILE=\"$HOME/.config/switchboard/env\" node \"$HOME/.config/switchboard/switchboard.mjs\" hook", "timeout": 5 }] }
     ]
   }
 }

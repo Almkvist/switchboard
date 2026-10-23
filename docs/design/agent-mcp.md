@@ -13,7 +13,7 @@ HTTP (`createAgentHttpServer`), bound to `listen.host:listen.port` (the Tailscal
 | Route | Auth | Purpose |
 |---|---|---|
 | `POST /mcp` | `Authorization: Bearer sb_…` | MCP Streamable HTTP, stateless, JSON responses |
-| `GET /unread` | bearer | `{unread, steer}` for the client hooks; with `session` (and `event`, `cwd`, `repo`, `branch`, `host`): that session's counts plus `targeted`, its presence recorded (`hookUnread`) |
+| `GET /unread` | bearer | `{unread, steer}` for the client hooks; with `session` (and `event`, `cwd`, `repo`, `branch`, `host`): that session's counts plus `targeted`, its presence recorded (`hookUnread`); with `event=PostToolUse` and a `thread` it can read, that thread becomes the session's reply route (anything else ignored, nothing told) |
 | `GET /wait?timeout_s=N` | bearer | N from 1 to 55, default 50: `{wake: [{session, unread, steer}]}` as soon as a session this client reaches has a wake due, else `{wake: []}` at the timeout; never reads mail (`wakes`) |
 | `GET /healthz` | none | `{ok: true}` |
 
@@ -70,7 +70,7 @@ reading `<code>: <what to do instead>`; `loop_guard` is the loop guard's (`Core.
 ## Tests
 
 `test/agent-mcp.test.ts` (real HTTP on `127.0.0.1:0`: session headers, Codex's `_meta`, the inbox counts, `/wait`
-for a Claude and a Codex client, `/unread` with and without a session), `test/clients.test.ts` (the client against
+for a Claude and a Codex client, `/unread` with and without a session, PostToolUse's route), `test/clients.test.ts` (the client against
 `/mcp`, `/unread` and `/wait`).
 
 ## Non-goals

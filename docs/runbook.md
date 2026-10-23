@@ -299,4 +299,5 @@ Node ≥ 24, no dependencies), as its MCP server and hook. Setup per kit: [clien
   `sqlite3 /var/lib/switchboard/switchboard.db "select at, actor, detail from audit where action = 'loop_guard' order by id desc limit 20"`
 - **Old setups** keep working: a caller with only an HTTP MCP entry and its bearer token, or the old hook, reads all
   of its agent's mail as before. With the kit's hooks (Claude Code: the `rewake` Stop entry; Codex: `switchboard.mjs
-  hook codex`), an HTTP-only session is woken too.
+  hook codex`), an HTTP-only session is woken too, and Claude Code's `PostToolUse` entry routes replies in the threads
+  it writes in back to it.
