@@ -2,15 +2,15 @@
 // config handling, quota detection and session recovery. No network, no real model.
 
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import { type Options, query } from '@anthropic-ai/claude-agent-sdk';
 import { ClaudeEngine, ClaudeSdkEngine, CodexEngine, EngineError, OPS_MODEL, SessionLostError, claudeArgs, parseResetAt } from '../src/engines.ts';
+import { tempDir } from './fakes.ts';
 
 const STUB = (name: string) => new URL(`./stubs/${name}`, import.meta.url).pathname;
-const tmp = () => mkdtempSync(join(tmpdir(), 'sb-engine-'));
+const tmp = () => tempDir('sb-engine-');
 const req = (cwd: string, session: string | null = null) => ({ session, prompt: 'Turn for thread t_1.', systemPrompt: 'You are the ops agent.', mcp: { url: 'http://127.0.0.1:9/mcp', token: 'ops_secret' }, cwd });
 const records = (home: string) => readdirSync(home).filter((f) => f.startsWith('record-')).sort().map((f) => JSON.parse(readFileSync(join(home, f), 'utf8')));
 

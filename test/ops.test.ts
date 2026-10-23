@@ -3,8 +3,7 @@
 // error triggers an announced failover; human-to-human chatter doesn't wake it.
 
 import assert from 'node:assert/strict';
-import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, test } from 'node:test';
 import { parseConfig } from '../src/config.ts';
@@ -15,13 +14,13 @@ import { OpsAgent } from '../src/ops.ts';
 import { OpsMcp } from '../src/ops-mcp.ts';
 import { StubStatus } from '../src/status.ts';
 import { Windows } from '../src/windows.ts';
-import { Clock, FakeEngine, FakeSlack, RESOURCES, SLACK, buttonValue, call, turnThread, world } from './fakes.ts';
+import { Clock, FakeEngine, FakeSlack, RESOURCES, SLACK, buttonValue, call, tempDir, turnThread, world } from './fakes.ts';
 
 const running: Array<{ stop(): Promise<void> }> = [];
 afterEach(async () => { while (running.length) await running.pop()!.stop(); }); // even when an assertion failed
 
 async function boot(primary = new FakeEngine('claude'), failover: FakeEngine | undefined = new FakeEngine('codex'), first?: FakeEngine, ops: Record<string, unknown> = {}) {
-  const dir = mkdtempSync(join(tmpdir(), 'sb-ops-'));
+  const dir = tempDir('sb-ops-');
   const config = parseConfig({
     listen: { host: '127.0.0.1', port: 0 }, data_dir: join(dir, 'data'), slack: { ops_channel: SLACK.ops },
     resources: RESOURCES, ops: { mcp_port: 0, ...ops },
@@ -458,7 +457,7 @@ describe('failover', () => {
     const engine = new FakeEngine('claude');
     engine.fail = () => new EngineError('prompt is too long');
     const windows = new Windows(w.core, RESOURCES);
-    const memory = new Memory(join(mkdtempSync(join(tmpdir(), 'sb-ops-')), 'memory'));
+    const memory = new Memory(join(tempDir('sb-ops-'), 'memory'));
     const agent = new OpsAgent({ core: w.core, windows, mcp: new OpsMcp({ core: w.core, windows, status: new StubStatus(), memory }), mcpUrl: 'http://127.0.0.1:9/mcp',
       engines: [engine], systemPrompt: () => 'sys', contextDir: memory.dir });
     const { thread } = w.s.scout.sendMessage('ops', 'status?');
@@ -573,10 +572,10 @@ describe('sessions', () => {
   });
 
   test('a lost engine session starts over with the thread\'s history, not just what is new', async () => {
-    const home = mkdtempSync(join(tmpdir(), 'sb-ops-home-'));
-    const dir = mkdtempSync(join(tmpdir(), 'sb-ops-'));
+    const home = tempDir('sb-ops-home-');
+    const dir = tempDir('sb-ops-');
     const config = parseConfig({ listen: { host: '127.0.0.1', port: 0 }, data_dir: join(dir, 'data'), slack: { ops_channel: SLACK.ops }, resources: RESOURCES, ops: { mcp_port: 0 } }, join(dir, 'config.yaml'));
-    const claude = new ClaudeEngine({ bin: new URL('./stubs/fake-claude.mjs', import.meta.url).pathname, runDir: mkdtempSync(join(tmpdir(), 'sb-run-')), home });
+    const claude = new ClaudeEngine({ bin: new URL('./stubs/fake-claude.mjs', import.meta.url).pathname, runDir: tempDir('sb-run-'), home });
     const sb = await start({ config, secrets: {}, slack: { port: new FakeSlack(), botUserId: SLACK.bot }, engines: [claude], now: new Clock().now });
     running.push(sb);
     sb.core.addPrincipal('alice', 'Alice', SLACK.alice);

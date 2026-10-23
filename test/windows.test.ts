@@ -2,8 +2,6 @@
 // the Slack button handler, pressed by a Slack user who is an allowed approver.
 
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { after, before, describe, test } from 'node:test';
@@ -13,7 +11,7 @@ import { MIGRATIONS, openDb } from '../src/db.ts';
 import { listen } from '../src/main.ts';
 import { SlackBridge } from '../src/slack.ts';
 import { type Resource, Windows, titleFrom } from '../src/windows.ts';
-import { FakeSlack, RESOURCES, SLACK, buttonValue, call, hint, mcpClient, world } from './fakes.ts';
+import { FakeSlack, RESOURCES, SLACK, buttonValue, call, hint, mcpClient, tempDir, world } from './fakes.ts';
 
 
 function setup(maintenance?: { start: string; duration_minutes: number }) {
@@ -43,7 +41,7 @@ const errCode = (fn: () => unknown): string => {
 
 /** The titles migration 10 gives windows with these plans, in a v9 DB like the live one. */
 function migratedTitles(plans: string[]): string[] {
-  const path = join(mkdtempSync(join(tmpdir(), 'sb-titles-')), 'switchboard.db');
+  const path = join(tempDir('sb-titles-'), 'switchboard.db');
   const v9 = new DatabaseSync(path);
   for (const m of MIGRATIONS.slice(0, 9)) v9.exec(m);
   v9.exec('PRAGMA user_version = 9');
@@ -1192,7 +1190,7 @@ describe('queued changes (P5)', () => {
 
 describe('migrations', () => {
   test('a live v7 DB keeps its windows, approvals and audit rows through every later migration; stale ops wake rows are marked read', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'sb-mig-')), 'switchboard.db');
+    const path = join(tempDir('sb-mig-'), 'switchboard.db');
     const v7 = new DatabaseSync(path);
     v7.exec('PRAGMA foreign_keys = ON;');
     for (const m of MIGRATIONS.slice(0, 7)) v7.exec(m);
@@ -1250,7 +1248,7 @@ describe('migrations', () => {
   });
 
   test('migration 10 applies to a DB whose old terms trigger is missing, and leaves the new one in place', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'sb-mig-')), 'switchboard.db');
+    const path = join(tempDir('sb-mig-'), 'switchboard.db');
     const v9 = new DatabaseSync(path);
     for (const m of MIGRATIONS.slice(0, 9)) v9.exec(m);
     v9.exec('PRAGMA user_version = 9; DROP TRIGGER windows_terms_fixed;');
@@ -1262,7 +1260,7 @@ describe('migrations', () => {
   });
 
   test('the live v9 DB keeps every row through migration 10; each window gets the title titleFrom derives from its plan, fixed like its other terms (P2)', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'sb-mig-')), 'switchboard.db');
+    const path = join(tempDir('sb-mig-'), 'switchboard.db');
     const v9 = new DatabaseSync(path);
     v9.exec('PRAGMA foreign_keys = ON;');
     for (const m of MIGRATIONS.slice(0, 9)) v9.exec(m);
@@ -1331,7 +1329,7 @@ describe('migrations', () => {
 
 describe('migration 12', () => {
   test('a live v11 DB keeps every change, rowid included, and its triggers; withdrawn becomes a state', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'sb-mig-')), 'switchboard.db');
+    const path = join(tempDir('sb-mig-'), 'switchboard.db');
     const v11 = new DatabaseSync(path);
     v11.exec('PRAGMA foreign_keys = ON;');
     for (const m of MIGRATIONS.slice(0, 11)) v11.exec(m);

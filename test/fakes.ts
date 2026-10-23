@@ -1,6 +1,10 @@
 // Fakes for the thin interfaces (CONVENTIONS.md): Slack port, clock, engines, and a seeded world.
 // Used by tests and by scripts/e2e.ts. No network.
 
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { after } from 'node:test';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { type ClientHints, Core, type CoreOptions, type ResearchDefault } from '../src/core.ts';
@@ -61,6 +65,13 @@ export function world(researchDefault: ResearchDefault = 'deny', options: Omit<C
 }
 
 export const tick = (): Promise<void> => new Promise((r) => setImmediate(r));
+
+/** A temp dir, removed when the test (or suite, or file) that made it ends: /tmp may be RAM. */
+export function tempDir(prefix: string): string {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  after(() => rmSync(dir, { recursive: true, force: true }));
+  return dir;
+}
 
 /** Session n's id, as Claude Code makes them (a uuid). */
 export const sid = (n: number): string => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;

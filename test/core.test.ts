@@ -1,14 +1,12 @@
 // Visibility rules (docs/plan.md §4), tokens, and the append-only log. One test per rule.
 
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, test } from 'node:test';
 import { type ClientHints, Core, SwitchboardError, sha256 } from '../src/core.ts';
 import { MIGRATIONS, openDb } from '../src/db.ts';
-import { hint, sid, world } from './fakes.ts';
+import { hint, sid, tempDir, world } from './fakes.ts';
 
 const code = (fn: () => unknown): string => {
   try { fn(); } catch (err) { if (err instanceof SwitchboardError) return err.code; throw err; }
@@ -406,7 +404,7 @@ describe('event log', () => {
   });
 
   test('migration 5 gives no existing engine session a read position it never reached', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'sb-mig-')), 'switchboard.db');
+    const path = join(tempDir('sb-mig-'), 'switchboard.db');
     const v4 = new DatabaseSync(path);
     for (let i = 0; i < 4; i++) { v4.exec(MIGRATIONS[i]!); v4.exec(`PRAGMA user_version = ${i + 1}`); }
     // Engine A last read event 5, engine B event 10; before migration 5 only the shared mark (10) was kept.
@@ -422,7 +420,7 @@ describe('event log', () => {
   });
 
   test('migration 6 drops the old mirror\'s Slack roots of chat threads with no human in them (P3)', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'sb-mig-')), 'switchboard.db');
+    const path = join(tempDir('sb-mig-'), 'switchboard.db');
     const v5 = new DatabaseSync(path);
     for (let i = 0; i < 5; i++) { v5.exec(MIGRATIONS[i]!); v5.exec(`PRAGMA user_version = ${i + 1}`); }
     const at = '2026-10-14T00:00:00.000Z';
@@ -447,7 +445,7 @@ describe('event log', () => {
   });
 
   test('migration 7 places each existing participant by the events before its join, as the timestamps did', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'sb-mig-')), 'switchboard.db');
+    const path = join(tempDir('sb-mig-'), 'switchboard.db');
     const v6 = new DatabaseSync(path);
     for (let i = 0; i < 6; i++) { v6.exec(MIGRATIONS[i]!); v6.exec(`PRAGMA user_version = ${i + 1}`); }
     v6.exec("INSERT INTO threads (id, kind, visibility, title, created_at) VALUES ('t_000000000001', 'chat', 'shared', 'x', '2026-10-14T10:00:00.000Z')");
@@ -469,7 +467,7 @@ describe('event log', () => {
   });
 
   test('migration 13 adds the items the ops agent tells humans about, and keeps every row of a v12 DB', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'sb-mig-')), 'switchboard.db');
+    const path = join(tempDir('sb-mig-'), 'switchboard.db');
     const v12 = new DatabaseSync(path);
     v12.exec('PRAGMA foreign_keys = ON;');
     for (const m of MIGRATIONS.slice(0, 12)) v12.exec(m);
@@ -494,7 +492,7 @@ describe('event log', () => {
   });
 
   test('migration 14 gives a legacy ask_human that was never mirrored or answered a pending ask, so it expires and its agent hears', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'sb-mig-')), 'switchboard.db');
+    const path = join(tempDir('sb-mig-'), 'switchboard.db');
     const v10 = new DatabaseSync(path);
     v10.exec('PRAGMA foreign_keys = ON;');
     for (const m of MIGRATIONS.slice(0, 10)) v10.exec(m);
@@ -677,7 +675,7 @@ describe('delegates (P4)', () => {
   });
 
   test('migration 11 keeps every row of a live v10 DB; every principal starts without a delegate', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'sb-mig-')), 'switchboard.db');
+    const path = join(tempDir('sb-mig-'), 'switchboard.db');
     const v10 = new DatabaseSync(path);
     v10.exec('PRAGMA foreign_keys = ON;');
     for (const m of MIGRATIONS.slice(0, 10)) v10.exec(m);
@@ -803,7 +801,7 @@ describe('sessions', () => {
   });
 
   test('migration 15 keeps every row of a live v14 DB; its mail stays untargeted, so every session of the agent reads it', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'sb-mig-')), 'switchboard.db');
+    const path = join(tempDir('sb-mig-'), 'switchboard.db');
     const v14 = new DatabaseSync(path);
     v14.exec('PRAGMA foreign_keys = ON;');
     for (const m of MIGRATIONS.slice(0, 14)) v14.exec(m);

@@ -3,7 +3,7 @@
 // Run: npm run e2e
 
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -233,4 +233,5 @@ try {
   process.exitCode = 1;
 } finally {
   await sb.stop();
+  rmSync(dir, { recursive: true, force: true });
 }

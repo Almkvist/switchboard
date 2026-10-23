@@ -1,9 +1,8 @@
 // The admin CLI against a temp data dir.
 
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { main } from '../src/cli.ts';
@@ -13,10 +12,10 @@ import { openDb } from '../src/db.ts';
 import { dbPath, start } from '../src/main.ts';
 import { SlackBridge } from '../src/slack.ts';
 import { Windows } from '../src/windows.ts';
-import { Clock, FakeSlack, SLACK, buttonValue } from './fakes.ts';
+import { Clock, FakeSlack, SLACK, buttonValue, tempDir } from './fakes.ts';
 
 export function tempConfig(extra = ''): string {
-  const dir = mkdtempSync(join(tmpdir(), 'switchboard-'));
+  const dir = tempDir('switchboard-');
   const path = join(dir, 'config.yaml');
   writeFileSync(path, `listen: { host: 127.0.0.1, port: 0 }\ndata_dir: ${join(dir, 'data')}\nslack: { ops_channel: COPS00001 }\n${extra}`);
   return path;
@@ -259,7 +258,7 @@ test('a start that fails halfway closes what it opened instead of hanging half-s
   const free = createServer();
   const port = await new Promise<number>((r) => free.listen(0, '127.0.0.1', () => r((free.address() as { port: number }).port)));
   await new Promise((r) => free.close(r));
-  const dir = mkdtempSync(join(tmpdir(), 'switchboard-'));
+  const dir = tempDir('switchboard-');
   // The agent MCP server is listening by the time the ops engine chain turns out to have no credentials.
   const config = parseConfig({ listen: { host: '127.0.0.1', port }, data_dir: join(dir, 'data'), slack: { ops_channel: SLACK.ops }, ops: { mcp_port: 0, engines: ['claude-api'] } }, join(dir, 'config.yaml'));
   await assert.rejects(start({ config, secrets: {}, slack: { port: new FakeSlack(), botUserId: SLACK.bot } }), /no ops engine has credentials/);
