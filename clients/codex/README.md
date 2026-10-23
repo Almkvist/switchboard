@@ -14,7 +14,8 @@
    switchboard tool call ("MCP tool call requires approval"). Codex names its thread in every tool call, which is how
    switchboard knows this session. When mail arrives for it, the client runs `codex queue --thread <id> --message …`:
    an idle session starts a turn with "Switchboard: N new message(s) for you…", a busy one gets it when its turn ends.
-   `codex` must be on the client's `PATH`.
+   It runs the Codex binary that started it (else `codex` on its `PATH`, which is Codex's own and may hold a wrapper
+   script that hangs there); set `SWITCHBOARD_CODEX_BIN` in the entry's env to pick another.
 3. **Hook.** Codex hooks use the same JSON contract as Claude Code's (`UserPromptSubmit` takes
    `hookSpecificOutput.additionalContext`, `Stop` takes `decision: "block"` and sends `stop_hook_active`; `session_id`
    is the thread id). Merge [`hooks.json`](hooks.json) into `~/.codex/hooks.json`: it runs `switchboard.mjs hook codex`.

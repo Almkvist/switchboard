@@ -271,6 +271,17 @@ describe('mcp mode', () => {
     assert.equal(c.stderr().match(/wake skipped: not a Codex thread id/g)?.length, 4);
   });
 
+  test('Codex: SWITCHBOARD_CODEX_BIN runs the wake, not the `codex` on PATH, which can be a wrapper that hangs in Codex\'s env', async () => {
+    const fake = await fakeSwitchboard({ wake: [{ session: `codex:${sid(43)}`, unread: 2, steer: 0 }] });
+    const bin = fakeCodex();
+    const onPath = fakeCodex();
+    const c = mcp({ SWITCHBOARD_URL: fake.url, SWITCHBOARD_TOKEN: 'sb_test', HOME: tmp(), PATH: onPath.path, SWITCHBOARD_CODEX_BIN: join(bin.path.split(':')[0]!, 'codex') });
+    c.initialize('codex-mcp-client');
+    await until('codex queue through SWITCHBOARD_CODEX_BIN', () => bin.runs().length > 0);
+    assert.deepEqual(bin.runs(), [['queue', '--thread', sid(43), '--message', NOTICE(2)]]);
+    assert.deepEqual(onPath.runs(), []);
+  });
+
   test('Codex: the thread named in _meta is woken with `codex queue`, argv exact and no shell; another client on the host, which never served it, doesn\'t', async () => {
     const token = w.core.issueToken('bob/helper');
     const codex = fakeCodex();

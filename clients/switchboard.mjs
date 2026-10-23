@@ -7,8 +7,8 @@
 // SWITCHBOARD_URL and SWITCHBOARD_TOKEN come from the environment, or from the KEY=value file SWITCHBOARD_ENV_FILE names,
 // so no token sits in an MCP config. The token is never logged.
 
-import { execFile } from 'node:child_process';
-import { readFileSync, statSync } from 'node:fs';
+import { execFile, execFileSync } from 'node:child_process';
+import { readFileSync, readlinkSync, statSync } from 'node:fs';
 import http from 'node:http';
 import https from 'node:https';
 import net from 'node:net';
@@ -171,6 +171,18 @@ async function wakeLoop(kind, url, token) {
   }
 }
 
+/**
+ * The codex that queues a wake: SWITCHBOARD_CODEX_BIN, else the Codex binary that started this client, else `codex` on
+ * PATH. Codex hands its MCP servers its own PATH, where a `codex` wrapper script (a version manager's) can hang.
+ */
+function codexBin() {
+  if (process.env.SWITCHBOARD_CODEX_BIN) return process.env.SWITCHBOARD_CODEX_BIN;
+  let parent = '';
+  try { parent = readlinkSync(`/proc/${process.ppid}/exe`); } catch { /* not Linux */ }
+  try { parent ||= execFileSync('ps', ['-o', 'comm=', '-p', String(process.ppid)], { encoding: 'utf8', timeout: 2_000 }).trim(); } catch { /* no ps */ }
+  return parent.startsWith('/') && basename(parent).startsWith('codex') ? parent : 'codex';
+}
+
 /** One wake. The notice is built here from the two counts: no other string from switchboard reaches the session. */
 async function wake(kind, w) {
   const urgent = count(w?.steer);
@@ -183,13 +195,14 @@ async function wake(kind, w) {
       const auth = process.env.CLAUDE_CODE_MESSAGING_TOKEN;
       const frames = `${auth ? `${JSON.stringify({ type: 'auth', token: auth })}\n` : ''}${JSON.stringify({ type: 'user', message: { role: 'user', content: text } })}\n`;
       const socket = net.createConnection(process.env.CLAUDE_CODE_MESSAGING_SOCKET, () => socket.end(frames));
+      socket.setTimeout(10_000, () => socket.destroy(new Error('no close in 10 s'))); // a stuck socket must not stall later wakes
       socket.on('error', (err) => { log(`wake socket failed: ${err.message}`); done(); });
       socket.on('close', done);
     });
   }
   const thread = typeof w?.session === 'string' && w.session.startsWith('codex:') ? w.session.slice('codex:'.length) : '';
   if (!UUID.test(thread)) return log('wake skipped: not a Codex thread id');
-  return new Promise((done) => execFile('codex', ['queue', '--thread', thread, '--message', text], (err) => {
+  return new Promise((done) => execFile(codexBin(), ['queue', '--thread', thread, '--message', text], { timeout: 30_000 }, (err) => {
     if (err) log(`codex queue failed: ${err.message}`);
     done();
   }));
