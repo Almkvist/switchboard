@@ -67,7 +67,9 @@ setup beyond this.
     `SWITCHBOARD_TOKEN` from the environment (then written to `~/.config/switchboard/env`, dir 0700, file 0600), else
     that file's; none, or only one of the two: exit 1 with one line. It copies itself to
     `~/.config/switchboard/switchboard.mjs` (0644) unless it is that file, and every command it writes uses that path
-    and `SWITCHBOARD_ENV_FILE=<home>/.config/switchboard/env`, absolute and single-quoted for the shell. Where
+    and `SWITCHBOARD_ENV_FILE=<home>/.config/switchboard/env`, absolute and single-quoted for the shell. They run the
+    `node` found on the installing shell's `PATH` by that path (a stable link, not the versioned binary behind it), else
+    the installer's own: an app started from a GUI may have no node on its `PATH`. Where
     `~/.claude/` exists: in `~/.claude/settings.json` (created if missing) every hook whose command contains
     `switchboard` runs the sync hook (`… hook`), once per event, rewake entries aside; `UserPromptSubmit` and `Stop` have
     it, and `Stop` has exactly one `rewake` entry (`"asyncRewake": true, "timeout": 86400`). Then, unless

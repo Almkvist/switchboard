@@ -17,11 +17,11 @@
 // so no token sits in an MCP config. The token is never logged.
 
 import { execFile, execFileSync, spawn } from 'node:child_process';
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { accessSync, appendFileSync, chmodSync, constants, existsSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import https from 'node:https';
 import { homedir, hostname, tmpdir } from 'node:os';
-import { basename, dirname, join, relative, resolve } from 'node:path';
+import { basename, delimiter, dirname, join, relative, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
@@ -564,8 +564,12 @@ function install() {
   try { installed = realpathSync(self) === realpathSync(client); } catch { /* not installed yet */ }
   if (!installed) step(client, () => put(client, readFileSync(self), 0o644, `${short(client)}: installed`, true));
 
-  const run = (args) => `SWITCHBOARD_ENV_FILE=${shellWord(envPath)} node ${shellWord(client)} ${args}`;
-  const stdio = { type: 'stdio', command: 'node', args: [client, 'mcp'], env: { SWITCHBOARD_ENV_FILE: envPath } };
+  // The `node` on this PATH, by that path (a stable link such as /opt/homebrew/bin/node, not the versioned binary it
+  // points to), else this process's own: an app started from a GUI may not have node on its PATH, and its hooks would fail.
+  const node = (process.env.PATH ?? '').split(delimiter).filter(Boolean).map((d) => join(d, 'node'))
+    .find((p) => { try { accessSync(p, constants.X_OK); return statSync(p).isFile(); } catch { return false; } }) ?? process.execPath;
+  const run = (args) => `SWITCHBOARD_ENV_FILE=${shellWord(envPath)} ${shellWord(node)} ${shellWord(client)} ${args}`;
+  const stdio = { type: 'stdio', command: node, args: [client, 'mcp'], env: { SWITCHBOARD_ENV_FILE: envPath } };
   if (existsSync(join(home, '.claude'))) {
     hooks(join(home, '.claude', 'settings.json'), run('hook'), run('rewake'));
     let current;
@@ -587,7 +591,7 @@ function install() {
   let codexHooks = false;
   if (existsSync(join(home, '.codex'))) {
     const config = join(home, '.codex', 'config.toml');
-    const table = `[mcp_servers.switchboard]\ncommand = "node"\nargs = [${JSON.stringify(client)}, "mcp"]\n` +
+    const table = `[mcp_servers.switchboard]\ncommand = ${JSON.stringify(node)}\nargs = [${JSON.stringify(client)}, "mcp"]\n` +
       `env = { SWITCHBOARD_ENV_FILE = ${JSON.stringify(envPath)} }\ndefault_tools_approval_mode = "approve"\n`;
     step(config, () => {
       const next = withTable(read(config), table);

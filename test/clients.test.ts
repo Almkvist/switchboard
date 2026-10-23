@@ -533,9 +533,10 @@ describe('install: one idempotent command sets up this machine', () => {
     const dir = join(home, '.config', 'switchboard');
     const env = join(dir, 'env');
     const client = join(dir, 'switchboard.mjs');
-    const run = (args: string) => `SWITCHBOARD_ENV_FILE=${q(env)} node ${q(client)} ${args}`;
+    // These tests' PATH holds no node, so install writes its own (process.execPath here).
+    const run = (args: string) => `SWITCHBOARD_ENV_FILE=${q(env)} ${q(process.execPath)} ${q(client)} ${args}`;
     return { dir, env, client, sync: run('hook'), codex: run('hook codex'), rewake: run('rewake'),
-      stdio: { type: 'stdio', command: 'node', args: [client, 'mcp'], env: { SWITCHBOARD_ENV_FILE: env } } };
+      stdio: { type: 'stdio', command: process.execPath, args: [client, 'mcp'], env: { SWITCHBOARD_ENV_FILE: env } } };
   };
   /** A fake `claude`, alone on PATH: records its argv and keeps user-scope MCP servers in ~/.claude.json, as Claude Code does. */
   const fakeClaude = () => {
@@ -556,6 +557,19 @@ fs.writeFileSync(file, JSON.stringify({ ...doc, mcpServers: servers }), { mode: 
     chmodSync(join(dir, 'claude'), 0o755);
     return { path: dir, calls: () => (existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l) as string[]) : []) };
   };
+  test('the commands it writes run the `node` found on its PATH, by that path (an app started from a GUI may lack node on its own PATH)', () => {
+    const home = tmp();
+    mkdirSync(join(home, '.claude'));
+    const claude = fakeClaude();
+    const bin = tmp();
+    symlinkSync(process.execPath, join(bin, 'node'));
+    const r = install(home, { SWITCHBOARD_URL: 'http://127.0.0.1:9', SWITCHBOARD_TOKEN: 'sb_test' }, `${bin}:${claude.path}`);
+    assert.equal(r.code, 0, r.err);
+    const node = join(bin, 'node');
+    const mcp = JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8')).mcpServers.switchboard;
+    assert.equal(mcp.command, node, 'the PATH entry itself, not the binary it links to');
+  });
+
   /** A shell running `command` as Claude Code or Codex runs a hook command: `input` on stdin. */
   const shell = (command: string, home: string, input: string) => new Promise<{ code: number | null; stdout: string }>((done) => {
     const child = spawn('/bin/sh', ['-c', command], { env: { HOME: home, PATH: process.env['PATH'] ?? '', XDG_RUNTIME_DIR: runtime } });
@@ -659,7 +673,7 @@ model = "gpt-5"
 approval_policy = "on-request"
 
 [mcp_servers.switchboard]
-command = "node"
+command = ${JSON.stringify(process.execPath)}
 args = ["${p.client}", "mcp"]
 env = { SWITCHBOARD_ENV_FILE = "${p.env}" }
 default_tools_approval_mode = "approve"
@@ -752,11 +766,14 @@ model = "gpt-5-mini"
     const p = paths(home);
     const r = install(home, CREDS, tmp());
     assert.equal(r.code, 0, r.err);
-    const ours = (command: string) => command.replace('"$HOME/.config/switchboard/env"', q(p.env)).replace('"$HOME/.config/switchboard/switchboard.mjs"', q(p.client));
+    // The kits say `node`; install writes the node it found (this PATH has none, so its own) by its absolute path.
+    const ours = (command: string) => command.replace('"$HOME/.config/switchboard/env"', q(p.env)).replace(' node ', ` ${q(process.execPath)} `)
+      .replace('"$HOME/.config/switchboard/switchboard.mjs"', q(p.client));
     const kit = (f: string) => JSON.parse(readFileSync(new URL(`../clients/${f}`, import.meta.url), 'utf8'), (k, v) => (k === 'command' ? ours(v) : v));
     assert.deepEqual(JSON.parse(readFileSync(join(home, '.claude', 'settings.json'), 'utf8')), kit('claude-code/settings-snippet.json'));
     assert.deepEqual(JSON.parse(readFileSync(join(home, '.codex', 'hooks.json'), 'utf8')), kit('codex/hooks.json'));
-    const toml = readFileSync(new URL('../clients/codex/config-snippet.toml', import.meta.url), 'utf8').replaceAll('/home/you', home);
+    const toml = readFileSync(new URL('../clients/codex/config-snippet.toml', import.meta.url), 'utf8').replaceAll('/home/you', home)
+      .replace('command = "node"', `command = ${JSON.stringify(process.execPath)}`);
     assert.equal(readFileSync(join(home, '.codex', 'config.toml'), 'utf8'), `${toml.split('\n').filter((l) => l && !l.startsWith('#')).join('\n')}\n`);
     assert.ok(!readdirSync(p.dir).some((f) => f.startsWith('backup-')), 'nothing to back up');
     const command = r.out.split('\n').map((l) => l.trim()).find((l) => l.startsWith('claude mcp '));
