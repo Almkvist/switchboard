@@ -118,9 +118,10 @@ function serve() {
       kind = name === 'claude-code' ? 'claude' : name === 'codex-mcp-client' ? 'codex' : null;
       if (!problem && (kind === 'codex' || (kind === 'claude' && process.env.CLAUDE_CODE_MESSAGING_SOCKET))) void wakeLoop(kind, url, token);
     }
-    // Codex names its thread in every tool call: the threads this client serves, which its /wait names. Once its Codex
-    // exits, so does this client, and nothing names them any more.
-    const thread = msg?.method === 'tools/call' ? msg.params?._meta?.threadId : undefined;
+    // Codex names its thread in every tool call (as switchboard reads it: threadId, else the turn metadata's thread_id): the
+    // threads this client serves, which its /wait names. Once its Codex exits, so does this client, and nothing names them.
+    const meta = msg?.method === 'tools/call' ? msg.params?._meta : undefined;
+    const thread = meta?.threadId ?? meta?.['x-codex-turn-metadata']?.thread_id;
     if (typeof thread === 'string' && UUID.test(thread) && threads[0] !== thread) {
       const known = threads.indexOf(thread);
       if (known >= 0) threads.splice(known, 1);

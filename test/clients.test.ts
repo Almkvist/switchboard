@@ -245,6 +245,20 @@ describe('mcp mode', () => {
     w.s.analyst.readInbox();
   });
 
+  test('Codex: a tool call that names its thread only in x-codex-turn-metadata is served too: its /wait names the thread, which is woken', async () => {
+    w.core.addAgent('bob', 'reviewer');
+    const codex = fakeCodex();
+    const c = mcp({ SWITCHBOARD_ENV_FILE: envFile(w.core.issueToken('bob/reviewer')), HOME: tmp(), PATH: codex.path });
+    c.initialize('codex-mcp-client');
+    await c.reply(0);
+    c.send({ id: 1, method: 'tools/call', params: { name: 'whoami', arguments: {}, _meta: { 'x-codex-turn-metadata': { session_id: sid(17), thread_id: sid(17) } } } });
+    assert.equal(JSON.parse((await c.reply(1))['result'].content[0].text).session, 'bob/reviewer@webapp');
+    await until('its poll naming the thread', () => !!session(`codex:${sid(17)}`)?.['polled_at']);
+    w.s.helper.sendMessage('reviewer', 'for the reviewer');
+    await until('codex queue', () => codex.runs().length > 0);
+    assert.deepEqual(codex.runs(), [['queue', '--thread', sid(17), '--message', NOTICE(1)]]);
+  });
+
   test('a wake whose Codex thread isn\'t a uuid runs no `codex queue`; the valid one next to it does', async () => {
     const fake = await fakeSwitchboard({ wake: [{ session: 'codex:../../etc/passwd', unread: 1, steer: 0 }, { session: `codex:${sid(41)}; rm -rf ~`, unread: 1, steer: 0 },
       { session: 'codex:0000 0000', unread: 1, steer: 0 }, { session: `claude:${sid(41)}`, unread: 1, steer: 0 }, { session: `codex:${sid(42)}`, unread: 1, steer: 0 }] });

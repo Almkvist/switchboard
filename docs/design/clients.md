@@ -25,8 +25,8 @@ setup beyond this.
     `CLAUDE_CODE_MESSAGING_SOCKET`): checks the registry every 2 s and polls again at once when the status changes;
     each wake for its own session, unless the registry says busy or waiting, is written to the socket as NDJSON
     (`{"type":"auth","token":…}` when `CLAUDE_CODE_MESSAGING_TOKEN` is set, then `{"type":"user","message":{"role":"user","content":…}}`).
-    Codex: the client remembers the thread ids it forwarded a tools/call for (`params._meta.threadId`, uuids, the newest
-    32), names them on every `/wait` as `X-Switchboard-Threads`, and polls again at once when a new one appears; each
+    Codex: the client remembers the thread ids it forwarded a tools/call for (`params._meta.threadId`, else
+    `_meta["x-codex-turn-metadata"].thread_id`, as the server reads it; uuids, the newest 32), names them on every `/wait` as `X-Switchboard-Threads`, and polls again at once when a new one appears; each
     wake names one of those threads, checked to be a uuid,
     and runs `execFile('codex', ['queue', '--thread', id, '--message', notice])`, no shell.
   - The notice is built from the two integer counts only: `Switchboard: N new message(s) for you[, M urgent]. Call the
